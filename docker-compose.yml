@@ -1,0 +1,13 @@
+services:
+  dsbot:
+    build: .
+    container_name: dsbot
+    # Переменные берутся из .env (создать из .env.example).
+    env_file: .env
+    # Автоперезапуск при падении/перезагрузке сервера.
+    restart: unless-stopped
+    # Логи переживают пересоздание контейнера.
+    volumes:
+      - ./logs:/app/logs
+    # Бот общается только исходящими запросами (Discord Gateway, Web App, OCR) —
+    # порты наружу не нужны.

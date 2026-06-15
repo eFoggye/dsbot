@@ -1,0 +1,23 @@
+{
+  "name": "discord-channel-listener",
+  "version": "1.0.0",
+  "description": "Minimal Discord bot that listens to selected channels and exports message events for spreadsheet processing.",
+  "type": "module",
+  "private": true,
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "check:env": "node src/checkConfig.js --strict",
+    "dry-run": "node src/dryRun.js",
+    "backfill": "node src/backfill.js",
+    "discover": "node src/discover.js",
+    "syntax": "node --check src/index.js && node --check src/config.js && node --check src/channelRules.js && node --check src/channelRouter.js && node --check src/logger.js && node --check src/messageNormalizer.js && node --check src/messageSnapshot.js && node --check src/messageParser.js && node --check src/parsers/helpers.js && node --check src/parsers/caseAssignmentParser.js && node --check src/parsers/caseStatusParser.js && node --check src/parsers/staffParser.js && node --check src/parsers/disciplineParser.js && node --check src/parsers/vacationParser.js && node --check src/parsers/internalOrdersParser.js && node --check src/sinks/fileSink.js && node --check src/sinks/httpSink.js && node --check src/ocr/orderOcr.js && node --check src/publish/publishConfig.js && node --check src/publish/caseEmbeds.js && node --check src/publish/rosterContent.js && node --check src/publish/publisher.js && node --check src/discover.js && node --check src/checkConfig.js && node --check src/dryRun.js && node --check src/backfill.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.26.4",
+    "dotenv": "^17.4.2"
+  }
+}

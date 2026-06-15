@@ -1,0 +1,53 @@
+# Создание Discord-бота и подключение
+
+Пошагово: создать приложение-бота, получить токен, включить интенты, пригласить на сервер и запустить.
+
+## Шаг 1. Создать приложение и бота
+
+1. Открой [Discord Developer Portal](https://discord.com/developers/applications).
+2. **New Application** → задай имя (например `ГСУ-СК`).
+3. Слева **Bot** → при необходимости **Add Bot**.
+4. **Reset Token → Copy** — это `DISCORD_BOT_TOKEN`. Токен показывается один раз, вставь сразу в `.env`. Если он засветился — сбрось через **Reset Token**.
+
+## Шаг 2. Включить интенты
+
+**Bot → Privileged Gateway Intents:**
+- ✅ **MESSAGE CONTENT INTENT** — чтобы бот видел текст сообщений.
+- ✅ **SERVER MEMBERS INTENT** — чтобы упоминать сотрудников по нику при публикации состава.
+
+`Guilds`, `GuildMessages`, `GuildMessageReactions` — не привилегированные, отдельно включать не нужно.
+
+## Шаг 3. Пригласить на сервер
+
+1. **OAuth2 → URL Generator**:
+   - **Scopes:** `bot`;
+   - **Bot Permissions:** `View Channel`, `Read Message History`, `Send Messages`, `Add Reactions`.
+2. Скопируй ссылку, открой, выбери сервер → добавь бота.
+
+Модераторские права (`Administrator`, `Manage Roles`, `Manage Messages`) не нужны.
+
+## Шаг 4. Узнать ID каналов
+
+1. Discord: **Настройки → Расширенные → Режим разработчика** (включить).
+2. ПКМ по каналу → **Копировать ID канала**.
+
+Боевые каналы уже прописаны в `src/channelRules.js` — на бою `DISCORD_CHANNEL_IDS` оставь пустым. Заполняй его ID только для теста на другом сервере.
+
+## Шаг 5. Запуск
+
+```bash
+cd ~/Desktop/dsbot
+cp .env.example .env      # заполнить значения
+docker compose up -d      # на сервере
+```
+
+Минимум в `.env`:
+```env
+DISCORD_BOT_TOKEN=...
+OUTPUT_WEBHOOK_URL=...     # URL Web App (см. DEPLOY.md)
+WEBHOOK_SECRET=...         # тот же секрет, что в таблице
+```
+
+## Шаг 6. Проверка
+
+Напиши в канале сообщение в рабочем формате (например распределение дела с номером `02-ОП-4215`). Бот залогирует «Captured message», запишет событие в `logs/`, отправит действие в таблицу, и в листе «Бот-лог» появится запись.
