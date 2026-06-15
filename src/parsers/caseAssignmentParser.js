@@ -43,8 +43,8 @@ export function parseCaseAssignment(event) {
       "Источник": caseInfo.source,
       "Следователь": investigatorName,
       "Статус": "Назначено",
-      "Срок": deadline?.date ?? "",
-      "Ссылка на документ": event.messageUrl,
+      "Срок (истечения)": deadline?.date ?? "",
+      "Ссылка на материалы": event.messageUrl,
       "Результат / основание": "",
     },
     data: {

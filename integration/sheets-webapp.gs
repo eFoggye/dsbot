@@ -216,6 +216,12 @@ function firstEmptyRow_(sheet) {
   return maxRows + 1;
 }
 
+function ensureRowExists_(sheet, rowIndex) {
+  const maxRows = sheet.getMaxRows();
+  if (rowIndex <= maxRows) return;
+  sheet.insertRowsAfter(maxRows, rowIndex - maxRows);
+}
+
 function findRow_(sheet, headerName, value) {
   const map = headerMap_(sheet);
   const col = map[headerName];
@@ -232,10 +238,51 @@ function findRow_(sheet, headerName, value) {
   return -1;
 }
 
+const HEADER_ALIASES = {
+  "Срок": ["Срок (истечения)"],
+  "Срок (истечения)": ["Срок"],
+  "Ссылка на документ": ["Ссылка на материалы"],
+  "Ссылка на публикацию": ["Ссылка на материалы"],
+  "Ссылка на материалы": ["Ссылка на документ", "Ссылка на публикацию"],
+  "Сотрудник": ["ФИО"],
+  "ФИО": ["Сотрудник"],
+};
+
+function colForHeader_(map, header) {
+  if (map[header]) return map[header];
+  const aliases = HEADER_ALIASES[header] || [];
+  for (let i = 0; i < aliases.length; i++) {
+    if (map[aliases[i]]) return map[aliases[i]];
+  }
+  return 0;
+}
+
+function valueFromRow_(row, map, headers) {
+  for (let i = 0; i < headers.length; i++) {
+    const col = colForHeader_(map, headers[i]);
+    if (!col) continue;
+    const value = row[col - 1];
+    if (value !== "" && value !== null && value !== undefined) return value;
+  }
+  return "";
+}
+
+function setValueByHeaders_(sheet, rowIndex, map, headers, value) {
+  for (let i = 0; i < headers.length; i++) {
+    const col = colForHeader_(map, headers[i]);
+    if (!col) continue;
+    const cell = sheet.getRange(rowIndex, col);
+    if (cell.getFormula()) return;
+    cell.setValue(value);
+    return;
+  }
+}
+
 /** Пишет явные значения по заголовкам. Данные бота важнее старых формул-шаблонов. */
 function writeRow_(sheet, rowIndex, map, rowObj) {
+  ensureRowExists_(sheet, rowIndex);
   Object.keys(rowObj).forEach(function (header) {
-    const col = map[header];
+    const col = colForHeader_(map, header);
     if (!col) return; // нет такой колонки — пропускаем
     const cell = sheet.getRange(rowIndex, col);
     const val = rowObj[header];
@@ -361,20 +408,45 @@ function archiveCaseByNumber_(caseNumber) {
   const rowIdx = findRow_(active, "Номер дела", caseNumber);
   if (rowIdx < 0) return { skipped: "дело не найдено в активных: " + caseNumber };
 
-  const rowValues = active.getRange(rowIdx, 1, 1, 10).getValues()[0]; // A:J
-  const map = headerMap_(archive);
+  const activeMap = headerMap_(active);
+  const archiveMap = headerMap_(archive);
   const targetRow = firstEmptyRow_(archive);
-  // Переносим A:J как есть; пишем не-формульные ячейки.
-  for (let c = 1; c <= 10; c++) {
-    const cell = archive.getRange(targetRow, c);
-    if (cell.getFormula()) continue;
-    if (rowValues[c - 1] !== "" && rowValues[c - 1] !== null) cell.setValue(rowValues[c - 1]);
+  ensureRowExists_(archive, targetRow);
+
+  const activeRow = active.getRange(rowIdx, 1, 1, active.getLastColumn()).getValues()[0];
+  const caseFields = [
+    ["Дата поступления"],
+    ["Код дела"],
+    ["Номер дела"],
+    ["Источник"],
+    ["Следователь"],
+    ["Статус"],
+    ["Срок (истечения)", "Срок"],
+    ["Ссылка на материалы", "Ссылка на документ", "Ссылка на публикацию"],
+    ["Результат / основание"],
+  ];
+  caseFields.forEach(function (headers) {
+    const value = valueFromRow_(activeRow, activeMap, headers);
+    if (value !== "" && value !== null && value !== undefined) {
+      setValueByHeaders_(archive, targetRow, archiveMap, headers, value);
+    }
+  });
+  setValueByHeaders_(archive, targetRow, archiveMap, ["Дата закрытия"], new Date());
+  setValueByHeaders_(archive, targetRow, archiveMap, ["Утверждено прокуратурой"], "Да");
+  setValueByHeaders_(archive, targetRow, archiveMap, ["Дата утверждения прокуратурой"], new Date());
+
+  archive.getRange(targetRow, 1, 1, archive.getLastColumn())
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle")
+    .setWrap(true);
+
+  // Удаляем строку из активных дел, чтобы снизу не оставалась пустая дырка.
+  const maxRowsBefore = active.getMaxRows();
+  active.deleteRow(rowIdx);
+  if (active.getMaxRows() < maxRowsBefore) {
+    active.insertRowsAfter(active.getMaxRows(), maxRowsBefore - active.getMaxRows());
+    setupCaseRow_(active, active.getMaxRows());
   }
-  if (map["Дата закрытия"]) archive.getRange(targetRow, map["Дата закрытия"]).setValue(new Date());
-  if (map["Утверждено прокуратурой"]) archive.getRange(targetRow, map["Утверждено прокуратурой"]).setValue("Да");
-  if (map["Дата утверждения прокуратурой"]) archive.getRange(targetRow, map["Дата утверждения прокуратурой"]).setValue(new Date());
-  // Чистим строку дела в активных.
-  active.getRange(rowIdx, 1, 1, 10).clearContent();
   return { archived: caseNumber, archiveRow: targetRow };
 }
 
@@ -467,14 +539,18 @@ function collectWeeklyReport_() {
   let transferred = 0, refused = 0, terminated = 0, archiveTotal = 0;
   const topMap = {};
   if (arc && arc.getLastRow() > 3) {
-    const v = arc.getRange(4, 1, arc.getLastRow() - 3, 13).getValues();
+    const arcMap = headerMap_(arc);
+    const v = arc.getRange(4, 1, arc.getLastRow() - 3, arc.getLastColumn()).getValues();
     v.forEach(function (r) {
-      if (String(r[3]).trim()) archiveTotal++; // номер дела непустой
-      const fio = String(r[5]).trim(), res = String(r[6]).trim(), closed = r[10]; // F, G(статус), K
+      if (String(valueFromRow_(r, arcMap, ["Номер дела"])).trim()) archiveTotal++;
+      const fio = String(valueFromRow_(r, arcMap, ["Следователь"])).trim();
+      const status = String(valueFromRow_(r, arcMap, ["Статус"])).trim();
+      const result = String(valueFromRow_(r, arcMap, ["Результат / основание"])).trim();
+      const closed = valueFromRow_(r, arcMap, ["Дата закрытия"]);
       if (inWeek(closed)) {
-        if (res === "Передано в прокуратуру") transferred++;
-        else if (res === "Отказано в возбуждении") refused++;
-        else if (res === "Прекращено") terminated++;
+        if (status === "Передано в прокуратуру" || result === "Передано в прокуратуру") transferred++;
+        else if (status === "Отказано в возбуждении" || result === "Отказ в ВУД") refused++;
+        else if (status === "Прекращено" || result === "Прекращено") terminated++;
         if (fio) topMap[fio] = (topMap[fio] || 0) + 1;
       }
     });
@@ -486,9 +562,12 @@ function collectWeeklyReport_() {
   const act = ss.getSheetByName("Дела в производстве");
   let opened = 0, inWork = 0, overdue = 0, burning = 0;
   if (act && act.getLastRow() > 3) {
-    const v = act.getRange(4, 1, act.getLastRow() - 3, 8).getValues();
+    const actMap = headerMap_(act);
+    const v = act.getRange(4, 1, act.getLastRow() - 3, act.getLastColumn()).getValues();
     v.forEach(function (r) {
-      const post = r[0], status = String(r[6]).trim(), due = r[7]; // A,G,H
+      const post = valueFromRow_(r, actMap, ["Дата поступления"]);
+      const status = String(valueFromRow_(r, actMap, ["Статус"])).trim();
+      const due = valueFromRow_(r, actMap, ["Срок (истечения)", "Срок"]);
       if (inWeek(post)) opened++;
       if (status === "Назначено" || status === "Возбуждено" || status === "Приостановлено") {
         inWork++;
@@ -543,9 +622,12 @@ function collectWeeklyReport_() {
   const prom = ss.getSheetByName("Повышения");
   const ready = [];
   if (prom && prom.getLastRow() > 3) {
-    const v = prom.getRange(4, 1, prom.getLastRow() - 3, 15).getValues();
+    const promMap = headerMap_(prom);
+    const v = prom.getRange(4, 1, prom.getLastRow() - 3, prom.getLastColumn()).getValues();
     v.forEach(function (r) {
-      if (String(r[0]).trim() && String(r[14]).trim() === "ГОТОВ") ready.push(String(r[0]).trim());
+      const fio = String(valueFromRow_(r, promMap, ["Сотрудник", "ФИО"])).trim();
+      const verdict = String(valueFromRow_(r, promMap, ["Готовность к повышению"])).trim();
+      if (fio && verdict === "ГОТОВ") ready.push(fio);
     });
   }
 
@@ -583,19 +665,37 @@ function dvFromRange_(a1) {
   return SpreadsheetApp.newDataValidation().requireValueInRange(sp.getRange(a1), true).setAllowInvalid(false).build();
 }
 
-// Дело: код(B), статус(G) — выпадашки; «Отправить»(K), «В архив»(L) — чекбоксы.
+function columnLetter_(col) {
+  let out = "";
+  while (col > 0) {
+    const mod = (col - 1) % 26;
+    out = String.fromCharCode(65 + mod) + out;
+    col = Math.floor((col - mod) / 26);
+  }
+  return out;
+}
+
+// Дело: код, статус — выпадашки; «Отправить», «В архив» — чекбоксы.
 function setupCaseRow_(sheet, row) {
-  sheet.getRange(row, 2).setDataValidation(dvFromRange_("F3:F9"));   // Код дела
-  sheet.getRange(row, 7).setDataValidation(dvFromRange_("G3:G8"));   // Статус
-  sheet.getRange(row, 10).setDataValidation(
+  const map = headerMap_(sheet);
+  if (map["Код дела"]) sheet.getRange(row, map["Код дела"]).setDataValidation(dvFromRange_("F3:F9"));
+  if (map["Статус"]) sheet.getRange(row, map["Статус"]).setDataValidation(dvFromRange_("G3:G8"));
+  if (map["Результат / основание"]) sheet.getRange(row, map["Результат / основание"]).setDataValidation(
     SpreadsheetApp.newDataValidation()
       .requireValueInList(["Передано в прокуратуру", "Отказ в ВУД", "Прекращено"], true)
       .setAllowInvalid(false)
       .build()
   );
-  // C — обычная служебная нумерация: 1, 2, 3... по непустым номерам дел в D.
-  sheet.getRange(row, 3).setFormula('=IF($D' + row + '="";"";COUNTIF($D$4:$D' + row + ';"<>"))');
-  sheet.getRange(row, 11, 1, 2).insertCheckboxes();                  // K,L
+  const numberCol = map["Номер дела"];
+  const serialCol = map["Порядковый номер"];
+  if (numberCol && serialCol) {
+    const numberLetter = columnLetter_(numberCol);
+    sheet.getRange(row, serialCol).setFormula(
+      '=IF($' + numberLetter + row + '="";"";COUNTIF($' + numberLetter + '$4:$' + numberLetter + row + ';"<>"))'
+    );
+  }
+  if (map["Отправить"]) sheet.getRange(row, map["Отправить"]).insertCheckboxes();
+  if (map["В архив"]) sheet.getRange(row, map["В архив"]).insertCheckboxes();
 }
 
 // Сотрудник: звание(C), должность(D), отдел(E), подотдел(F), статус(I), взыскания(L,M).
