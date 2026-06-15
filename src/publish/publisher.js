@@ -6,10 +6,16 @@
 
 import { fetchPublishQueue, postAction } from "../sinks/httpSink.js";
 import { buildCaseMessage } from "./caseEmbeds.js";
+import { buildPgSkOMessage } from "./pgskoEmbeds.js";
 import { buildRosterMessages } from "./rosterContent.js";
 import { buildReportMessage } from "./reportEmbed.js";
 import {
-  CHANNELS, PROSECUTOR_ROLE_ID, ARCHIVE_EMOJI, ARCHIVE_REQUIRE_PROSECUTOR,
+  CHANNELS,
+  PROSECUTOR_ROLE_ID,
+  ARCHIVE_EMOJI,
+  ARCHIVE_REQUIRE_PROSECUTOR,
+  PGSKO_APPROVE_EMOJI,
+  PGSKO_APPROVER_ROLE_ID,
 } from "./publishConfig.js";
 
 const POLL_INTERVAL_MS = 15000;
@@ -38,6 +44,8 @@ async function pollOnce(client, config, logger) {
         await publishRoster(client, job, queue.rosterMessageIds || [], config, logger);
       } else if (job.type === "report") {
         await publishReport(client, job, config, logger);
+      } else if (job.type === "pgsko_report") {
+        await publishPgSkOReport(client, job, config, logger);
       } else {
         logger.warn("Неизвестный тип задания публикации", { type: job.type });
       }
@@ -108,6 +116,33 @@ async function publishReport(client, job, config, logger) {
   await postAction({ type: "report_published", queueId: job.id, messageId: sent.id }, {}, config, logger);
 }
 
+async function publishPgSkOReport(client, job, config, logger) {
+  if (!CHANNELS.pgskoReports) {
+    logger.warn("Канал ПГСкО-отчётов не задан (PGSKO_REPORT_CHANNEL_ID) — публикация пропущена", {
+      reportId: job.reportId,
+    });
+    await postAction(
+      { type: "pgsko_published", queueId: job.id, reportId: job.reportId || "", messageId: "", messageUrl: "" },
+      {}, config, logger,
+    );
+    return;
+  }
+  const channel = await client.channels.fetch(CHANNELS.pgskoReports);
+  const sent = await channel.send(buildPgSkOMessage(job));
+  const messageUrl = `https://discord.com/channels/${sent.guildId}/${sent.channelId}/${sent.id}`;
+  logger.info("Отчёт ПГСкО опубликован", { reportId: job.reportId, messageId: sent.id });
+  await postAction(
+    {
+      type: "pgsko_published",
+      queueId: job.id,
+      reportId: job.reportId || "",
+      messageId: sent.id,
+      messageUrl,
+    },
+    {}, config, logger,
+  );
+}
+
 // Обработчик реакции ✅ в «дела-ск» → архивация дела (вызывается из index.js).
 export async function handleArchiveReaction(reaction, user, config, logger) {
   try {
@@ -125,5 +160,36 @@ export async function handleArchiveReaction(reaction, user, config, logger) {
     await postAction({ type: "archive_case_by_message", messageId: message.id }, {}, config, logger);
   } catch (error) {
     logger.error("Ошибка обработки реакции архивации", { error: error.message });
+  }
+}
+
+// Обработчик реакции ✅ в канале ПГСкО → зачёт отчёта в таблице.
+export async function handlePgSkOReaction(reaction, user, config, logger) {
+  try {
+    if (user.bot) return;
+    if (!CHANNELS.pgskoReports) return;
+    if (reaction.partial) await reaction.fetch();
+    const message = reaction.message.partial ? await reaction.message.fetch() : reaction.message;
+    if (message.channelId !== CHANNELS.pgskoReports) return;
+    if (reaction.emoji.name !== PGSKO_APPROVE_EMOJI) return;
+
+    const member = await message.guild.members.fetch(user.id).catch(() => null);
+    if (PGSKO_APPROVER_ROLE_ID && (!member || !member.roles.cache.has(PGSKO_APPROVER_ROLE_ID))) return;
+
+    logger.info("Реакция ✅ на отчёте ПГСкО — засчитываю", {
+      messageId: message.id,
+      approvedBy: member?.displayName || user.username,
+    });
+    await postAction(
+      {
+        type: "approve_pgsko_by_message",
+        messageId: message.id,
+        approvedById: user.id,
+        approvedByName: member?.displayName || user.username,
+      },
+      {}, config, logger,
+    );
+  } catch (error) {
+    logger.error("Ошибка обработки реакции ПГСкО", { error: error.message });
   }
 }

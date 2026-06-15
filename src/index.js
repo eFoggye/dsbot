@@ -7,7 +7,7 @@ import { normalizeMessage } from "./messageNormalizer.js";
 import { saveMessageToFiles } from "./sinks/fileSink.js";
 import { postMessageEvent, postAction } from "./sinks/httpSink.js";
 import { recognizeOrder, orderActionsToSheetActions } from "./ocr/orderOcr.js";
-import { startPublisher, handleArchiveReaction } from "./publish/publisher.js";
+import { startPublisher, handleArchiveReaction, handlePgSkOReaction } from "./publish/publisher.js";
 
 const config = loadConfig({ requireRuntime: true });
 const logger = createLogger(config.logLevel);
@@ -116,6 +116,8 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
 
     // ✅ под опубликованным делом в «дела-ск» → архивация (отдельная ветка).
     await handleArchiveReaction(reaction, user, config, logger);
+    // ✅ под отчётом ПГСкО → зачёт отчёта в таблице.
+    await handlePgSkOReaction(reaction, user, config, logger);
 
     if (!config.channelIds.has(message.channelId)) return;
 

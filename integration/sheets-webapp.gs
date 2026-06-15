@@ -17,6 +17,8 @@
  *   - staff_status_event      -> сменить статус сотрудника в «Состав»
  *   - internal_order_needs_ocr-> зафиксировать в «Discord импорт» (нужен OCR)
  *   - raw_message             -> положить сырое сообщение в «Discord импорт»
+ *   - pgsko_published         -> сохранить Discord-сообщение отчёта ПГСкО
+ *   - approve_pgsko_by_message-> зачесть ПГСкО по ✅ под Discord-сообщением
  */
 
 // На какой строке у каждого листа находятся заголовки колонок.
@@ -27,6 +29,7 @@ const HEADER_ROWS = {
   "Архив дел": 3,
   "Состав": 3,
   "Повышения": 3,
+  "ПГСкО": 1,
   "Discord импорт": 1,
   "Бот-лог": 1,
 };
@@ -64,6 +67,8 @@ function doPost(e) {
       case "case_published":           result = onCasePublished_(action); break;
       case "roster_published":         result = onRosterPublished_(action); break;
       case "report_published":         result = onReportPublished_(action); break;
+      case "pgsko_published":          result = onPgSkOPublished_(action); break;
+      case "approve_pgsko_by_message": result = approvePgSkOByMessage_(action); break;
       case "archive_case_by_message":  result = archiveCaseByMessage_(action); break;
       default:                         result = appendImport_(action, meta, "неизвестный тип: " + action.type);
     }
@@ -329,6 +334,9 @@ function jsonOut(obj) {
 
 const QUEUE_SHEET = "Очередь публикаций";
 const PUBLISHED_SHEET = "Опубликованные дела"; // A=messageId, B=Номер дела, C=Статус, D=Время
+const PGSKO_SHEET = "ПГСкО";
+const PGSKO_STATUS_PENDING = "На проверке";
+const PGSKO_STATUS_APPROVED = "Зачтено";
 
 // Кладёт задание в очередь (вызывается из onEdit / меню публикации состава).
 function enqueuePublish_(type, dataObj) {
@@ -450,6 +458,192 @@ function archiveCaseByNumber_(caseNumber) {
   return { archived: caseNumber, archiveRow: targetRow };
 }
 
+/* ===================== ПГСкО: форма → Discord → зачёт ===================== */
+
+function ensurePgSkOSheet_() {
+  const headers = [
+    "ID отчета",
+    "Дата отчета",
+    "Следователь",
+    "Статик следователя",
+    "Привлеченный сотрудник",
+    "Статик привлеченного",
+    "Доказательство",
+    "Статус",
+    "Проверил",
+    "Дата проверки",
+    "Discord message ID",
+    "Ссылка на сообщение",
+    "Комментарий",
+  ];
+  const sheet = ensureSheet_(PGSKO_SHEET, headers);
+  if (sheet.getMaxColumns() < headers.length) sheet.insertColumnsAfter(sheet.getMaxColumns(), headers.length - sheet.getMaxColumns());
+  const map = headerMap_(sheet);
+  headers.forEach(function (header, i) {
+    if (!map[header]) sheet.getRange(1, i + 1).setValue(header);
+  });
+  sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold");
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+function namedValue_(namedValues, names) {
+  for (let i = 0; i < names.length; i++) {
+    const value = namedValues[names[i]];
+    if (!value) continue;
+    if (Array.isArray(value)) return value.join(", ").trim();
+    return String(value).trim();
+  }
+  return "";
+}
+
+function getActiveStaffNames_() {
+  const sheet = ss_().getSheetByName("Состав");
+  const out = [];
+  const seen = {};
+  if (!sheet || sheet.getLastRow() < 4) return out;
+  const values = sheet.getRange(4, 1, sheet.getLastRow() - 3, 9).getValues();
+  values.forEach(function (r) {
+    const fio = String(r[0]).trim();
+    const status = String(r[8]).trim();
+    if (!fio || status !== "Активен" || seen[fio]) return;
+    seen[fio] = true;
+    out.push(fio);
+  });
+  return out.sort(function (a, b) { return a.localeCompare(b, "ru"); });
+}
+
+function appendPgSkOReport_(data) {
+  const sheet = ensurePgSkOSheet_();
+  const reportId = data.reportId || ("PGSKO-" + Utilities.getUuid().slice(0, 8).toUpperCase());
+  const submittedAt = data.submittedAt || new Date();
+  sheet.appendRow([
+    reportId,
+    submittedAt,
+    data.investigatorName || "",
+    data.investigatorStatic || "",
+    data.targetName || "",
+    data.targetStatic || "",
+    data.proofUrl || "",
+    PGSKO_STATUS_PENDING,
+    "",
+    "",
+    "",
+    "",
+    data.comment || "",
+  ]);
+  enqueuePublish_("pgsko_report", {
+    reportId: reportId,
+    submittedAt: submittedAt,
+    investigatorName: data.investigatorName || "",
+    investigatorStatic: data.investigatorStatic || "",
+    targetName: data.targetName || "",
+    targetStatic: data.targetStatic || "",
+    proofUrl: data.proofUrl || "",
+    comment: data.comment || "",
+  });
+  return { sheet: PGSKO_SHEET, reportId: reportId };
+}
+
+function findPgSkORow_(sheet, headerName, value) {
+  const row = findRow_(sheet, headerName, value);
+  return row >= 0 ? row : -1;
+}
+
+function onPgSkOPublished_(action) {
+  if (action.queueId) markJobDone_(action.queueId);
+  const sheet = ensurePgSkOSheet_();
+  const map = headerMap_(sheet);
+  const row = action.reportId ? findPgSkORow_(sheet, "ID отчета", action.reportId) : -1;
+  if (row < 0) return { skipped: "отчёт ПГСкО не найден: " + (action.reportId || "") };
+  setValueByHeaders_(sheet, row, map, ["Discord message ID"], action.messageId || "");
+  setValueByHeaders_(sheet, row, map, ["Ссылка на сообщение"], action.messageUrl || "");
+  return { ok: true, reportId: action.reportId || "", messageId: action.messageId || "" };
+}
+
+function approvePgSkOByMessage_(action) {
+  const sheet = ensurePgSkOSheet_();
+  const row = findPgSkORow_(sheet, "Discord message ID", action.messageId || "");
+  if (row < 0) return { skipped: "отчёт ПГСкО по messageId не найден" };
+  const map = headerMap_(sheet);
+  const status = String(sheet.getRange(row, map["Статус"]).getValue()).trim();
+  if (status === PGSKO_STATUS_APPROVED) return { ok: true, alreadyApproved: true, row: row };
+  setValueByHeaders_(sheet, row, map, ["Статус"], PGSKO_STATUS_APPROVED);
+  setValueByHeaders_(sheet, row, map, ["Проверил"], action.approvedByName || action.approvedById || "");
+  setValueByHeaders_(sheet, row, map, ["Дата проверки"], new Date());
+  return { ok: true, approved: true, row: row };
+}
+
+function setupPgSkOForm_() {
+  ensurePgSkOSheet_();
+  const props = PropertiesService.getScriptProperties();
+  let form;
+  const existingId = props.getProperty("PGSKO_FORM_ID");
+  if (existingId) {
+    try { form = FormApp.openById(existingId); } catch (ignore) {}
+  }
+  if (!form) form = FormApp.create("ПГСкО — отчёт о привлечении к ответственности");
+
+  form.setTitle("ПГСкО — отчёт о привлечении к ответственности");
+  form.setDescription("Заполняется сотрудником СК после привлечения государственного служащего к ответственности.");
+  form.setCollectEmail(false);
+  form.setDestination(FormApp.DestinationType.SPREADSHEET, ss_().getId());
+
+  form.getItems().forEach(function (item) { form.deleteItem(item); });
+
+  const staff = getActiveStaffNames_();
+  if (staff.length) {
+    form.addListItem()
+      .setTitle("Ник следователя")
+      .setChoiceValues(staff)
+      .setRequired(true);
+  } else {
+    form.addTextItem().setTitle("Ник следователя").setRequired(true);
+  }
+  form.addTextItem().setTitle("Статик следователя").setRequired(true);
+  form.addTextItem().setTitle("Ник привлеченного сотрудника").setRequired(true);
+  form.addTextItem().setTitle("Статик привлеченного сотрудника").setRequired(true);
+  try {
+    form.addFileUploadItem()
+      .setTitle("Скриншот / доказательство")
+      .setHelpText("Прикрепите скриншот, подтверждающий привлечение к ответственности.")
+      .setRequired(true);
+  } catch (err) {
+    form.addTextItem()
+      .setTitle("Скриншот / доказательство")
+      .setHelpText("Вставьте ссылку на скриншот, если загрузка файлов недоступна.")
+      .setRequired(true);
+  }
+  form.addParagraphTextItem().setTitle("Комментарий").setRequired(false);
+
+  props.setProperty("PGSKO_FORM_ID", form.getId());
+  props.setProperty("PGSKO_FORM_URL", form.getPublishedUrl());
+  installPgSkOFormTrigger_();
+  SpreadsheetApp.getActive().toast("Форма ПГСкО готова: " + form.getPublishedUrl(), "ПГСкО", 12);
+  return form.getPublishedUrl();
+}
+
+function installPgSkOFormTrigger_() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === "onPgSkOFormSubmit_") ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger("onPgSkOFormSubmit_").forSpreadsheet(ss_()).onFormSubmit().create();
+}
+
+function onPgSkOFormSubmit_(e) {
+  const named = (e && e.namedValues) || {};
+  const data = {
+    submittedAt: new Date(),
+    investigatorName: namedValue_(named, ["Ник следователя"]),
+    investigatorStatic: namedValue_(named, ["Статик следователя"]),
+    targetName: namedValue_(named, ["Ник привлеченного сотрудника", "Ник привлечённого сотрудника"]),
+    targetStatic: namedValue_(named, ["Статик привлеченного сотрудника", "Статик привлечённого сотрудника"]),
+    proofUrl: namedValue_(named, ["Скриншот / доказательство"]),
+    comment: namedValue_(named, ["Комментарий"]),
+  };
+  return appendPgSkOReport_(data);
+}
+
 /* === Триггеры таблицы для публикации (вызываются из onEdit/onOpen кода таблицы) === */
 
 // Обработка чекбоксов «Отправить» / «В архив» в «Дела в производстве».
@@ -529,7 +723,7 @@ function collectRoster_() {
   const last = sheet.getLastRow();
   if (last < 4) return [];
   const stats = promotionStatsByName_();
-  const data = sheet.getRange(4, 1, last - 3, 13).getValues(); // A:M
+  const data = sheet.getRange(4, 1, last - 3, 14).getValues(); // A:N
   const out = [];
   data.forEach(function (r) {
     const fio = String(r[0]).trim();
@@ -539,9 +733,9 @@ function collectRoster_() {
       fio: fio, rank: String(r[2]).trim(), position: String(r[3]).trim(),
       department: String(r[4]).trim(), group: String(r[5]).trim(),
       joinedAt: rosterDate_(r[6]), status: String(r[8]).trim(),
-      warnings: Number(r[11]) || 0, reprimands: Number(r[12]) || 0,
+      warnings: Number(r[12]) || 0, reprimands: Number(r[13]) || 0,
       transferredCases: Number(personStats.transferredCases) || 0,
-      publicServiceCases: Number(personStats.publicServiceCases) || 0,
+      publicServiceCases: Number(r[11]) || Number(personStats.publicServiceCases) || 0,
       refusals: Number(personStats.refusals) || 0,
     });
   });
@@ -615,7 +809,7 @@ function collectWeeklyReport_() {
   const ros = ss.getSheetByName("Состав");
   let total = 0, apparat = 0, so = 0, opp = 0, vacation = 0, available = 0, totalW = 0, totalR = 0;
   if (ros && ros.getLastRow() > 3) {
-    const v = ros.getRange(4, 1, ros.getLastRow() - 3, 13).getValues();
+    const v = ros.getRange(4, 1, ros.getLastRow() - 3, 14).getValues();
     v.forEach(function (r) {
       const fio = String(r[0]).trim(); if (!fio) return;
       const dep = String(r[4]).trim(), status = String(r[8]).trim(), activeInv = String(r[9]).trim();
@@ -627,10 +821,37 @@ function collectWeeklyReport_() {
       }
       if (status === "Отпуск") vacation++;
       if (activeInv) available++;
-      totalW += Number(r[11]) || 0; // L Предупреждения
-      totalR += Number(r[12]) || 0; // M Выговоры
+      totalW += Number(r[12]) || 0; // M Предупреждения
+      totalR += Number(r[13]) || 0; // N Выговоры
     });
   }
+
+  // ПГСкО (отчёты формы + зачёты руководства)
+  const pgsko = ss.getSheetByName(PGSKO_SHEET);
+  let pgskoSubmittedWeek = 0, pgskoApprovedWeek = 0, pgskoPending = 0, pgskoApprovedTotal = 0;
+  const pgskoTopMap = {};
+  if (pgsko && pgsko.getLastRow() > 1) {
+    const pgskoMap = headerMap_(pgsko);
+    const v = pgsko.getRange(2, 1, pgsko.getLastRow() - 1, pgsko.getLastColumn()).getValues();
+    v.forEach(function (r) {
+      const fio = String(valueFromRow_(r, pgskoMap, ["Следователь"])).trim();
+      const submittedAt = valueFromRow_(r, pgskoMap, ["Дата отчета"]);
+      const approvedAt = valueFromRow_(r, pgskoMap, ["Дата проверки"]);
+      const status = String(valueFromRow_(r, pgskoMap, ["Статус"])).trim();
+      if (inWeek(submittedAt)) pgskoSubmittedWeek++;
+      if (status === PGSKO_STATUS_PENDING) pgskoPending++;
+      if (status === PGSKO_STATUS_APPROVED) {
+        pgskoApprovedTotal++;
+        const countDate = approvedAt instanceof Date ? approvedAt : submittedAt;
+        if (inWeek(countDate)) {
+          pgskoApprovedWeek++;
+          if (fio) pgskoTopMap[fio] = (pgskoTopMap[fio] || 0) + 1;
+        }
+      }
+    });
+  }
+  const pgskoTop = Object.keys(pgskoTopMap).map(function (k) { return [k, pgskoTopMap[k]]; })
+    .sort(function (a, b) { return b[1] - a[1]; }).slice(0, 5);
 
   // История за неделю (повышения, взыскания, кадры)
   const hist = ss.getSheetByName("История");
@@ -666,6 +887,13 @@ function collectWeeklyReport_() {
     cases: { opened: opened, transferred: transferred, refused: refused, terminated: terminated, inWork: inWork, overdue: overdue, burning: burning },
     top: top,
     staff: { total: total, apparat: apparat, so: so, opp: opp, vacation: vacation, available: available },
+    pgsko: {
+      submittedWeek: pgskoSubmittedWeek,
+      approvedWeek: pgskoApprovedWeek,
+      pending: pgskoPending,
+      totalApproved: pgskoApprovedTotal,
+      top: pgskoTop,
+    },
     promotions: promotions, appointments: appointments, dismissals: dismissals,
     discipline: { weekW: weekW, weekR: weekR, totalW: totalW, totalR: totalR },
     ready: ready, archiveTotal: archiveTotal,
@@ -728,12 +956,12 @@ function setupCaseRow_(sheet, row) {
   if (map["В архив"]) sheet.getRange(row, map["В архив"]).insertCheckboxes();
 }
 
-// Сотрудник: звание(C), должность(D), отдел(E), подотдел(F), статус(I), взыскания(L,M).
+// Сотрудник: звание(C), должность(D), отдел(E), подотдел(F), статус(I), взыскания(M,N).
 function setupStaffRow_(sheet, row) {
   sheet.getRange(row, 3).setDataValidation(dvFromRange_("A3:A14"));  // Звание
   sheet.getRange(row, 4).setDataValidation(dvFromRange_("B3:B22"));  // Должность
   sheet.getRange(row, 5).setDataValidation(dvFromRange_("C3:C5"));   // Отдел
   sheet.getRange(row, 6).setDataValidation(dvFromRange_("D3:D8"));   // Подотдел
   sheet.getRange(row, 9).setDataValidation(dvFromRange_("E3:E4"));   // Статус
-  sheet.getRange(row, 12, 1, 2).setDataValidation(dvFromRange_("K3:K6")); // Предупреждения, Выговоры
+  sheet.getRange(row, 13, 1, 2).setDataValidation(dvFromRange_("K3:K6")); // Предупреждения, Выговоры
 }

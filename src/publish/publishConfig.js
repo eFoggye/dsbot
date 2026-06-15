@@ -18,6 +18,9 @@ export const CHANNELS = {
   roster: channelIdByKey("staff"),     // состав-ск
   // Канал еженедельного отчёта (доступ — руководитель + Егорыч). ⚠️ ВПИСАТЬ ID, когда канал создадут.
   report: process.env.REPORT_CHANNEL_ID?.trim() || "",
+  // Канал проверяемых отчётов по ПГСкО. Если отдельный канал ещё не создан,
+  // можно временно не задавать — бот просто пометит публикацию как пропущенную.
+  pgskoReports: process.env.PGSKO_REPORT_CHANNEL_ID?.trim() || "",
 };
 
 // Цвет полосы embed еженедельного отчёта (тёмно-винный).
@@ -25,6 +28,9 @@ export const REPORT_COLOR = 0x6e1423;
 
 // Цвет полосы embed состава (красный, как в примерах).
 export const ROSTER_COLOR = 0xbd2b16;
+
+// Цвет embed отчёта ПГСкО.
+export const PGSKO_COLOR = 0x2f855a;
 
 // --- Роль прокуратуры (упоминается в шапке сообщений о делах) ---
 // Бот найдёт роль по имени; если задан PROSECUTOR_ROLE_ID в .env — используется он.
@@ -50,6 +56,11 @@ export const EMBED_FOOTER = "© 2026 Следственный комитет | R
 // Иначе принимаем любой ✅ (упрощённо).
 export const ARCHIVE_EMOJI = "✅";
 export const ARCHIVE_REQUIRE_PROSECUTOR = Boolean(PROSECUTOR_ROLE_ID);
+
+// Подтверждение ПГСкО по реакции ✅ в канале отчётов.
+// Если PGSKO_APPROVER_ROLE_ID пустой — засчитывается любая не-ботская галочка.
+export const PGSKO_APPROVE_EMOJI = "✅";
+export const PGSKO_APPROVER_ROLE_ID = process.env.PGSKO_APPROVER_ROLE_ID?.trim() || "";
 
 // === СОСТАВ ===
 // Один объект = один embed в канале «состав-ск».

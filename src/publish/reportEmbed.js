@@ -22,6 +22,7 @@ export function buildReportMessage(job) {
   const c = job.cases || {};
   const s = job.staff || {};
   const d = job.discipline || {};
+  const p = job.pgsko || {};
 
   const fields = [
     {
@@ -67,6 +68,15 @@ export function buildReportMessage(job) {
       value:
         `Выдано: +${d.weekW || 0} предупр., +${d.weekR || 0} выговоров\n` +
         `Всего сейчас: ${d.totalW || 0} предупр. / ${d.totalR || 0} выговоров`,
+      inline: false,
+    },
+    {
+      name: "🧾 ПГСкО",
+      value:
+        `Отправлено за неделю: **${p.submittedWeek || 0}**\n` +
+        `Зачтено за неделю: **${p.approvedWeek || 0}**\n` +
+        `Ожидают проверки: **${p.pending || 0}**\n` +
+        `Топ: ${listOrDash((p.top || []).slice(0, 5), (t, i) => `${i + 1}. ${shortName(t[0])} — ${t[1]}`)}`,
       inline: false,
     },
     {
