@@ -501,18 +501,48 @@ function publishOnEdit_(e) {
 }
 
 // Собирает состав для публикации (вызывается из пункта меню).
+function rosterDate_(value) {
+  if (!(value instanceof Date)) return value || "";
+  return Utilities.formatDate(value, Session.getScriptTimeZone(), "dd.MM.yyyy");
+}
+
+function promotionStatsByName_() {
+  const sheet = ss_().getSheetByName("Повышения");
+  const out = {};
+  if (!sheet || sheet.getLastRow() <= 3) return out;
+  const map = headerMap_(sheet);
+  const rows = sheet.getRange(4, 1, sheet.getLastRow() - 3, sheet.getLastColumn()).getValues();
+  rows.forEach(function (r) {
+    const fio = String(valueFromRow_(r, map, ["Сотрудник", "ФИО"])).trim();
+    if (!fio) return;
+    out[fio] = {
+      transferredCases: valueFromRow_(r, map, ["УД передано в прокуратуру"]) || 0,
+      publicServiceCases: valueFromRow_(r, map, ["Привлечено госслужащих"]) || 0,
+      refusals: valueFromRow_(r, map, ["Отказы в ВУД"]) || 0,
+    };
+  });
+  return out;
+}
+
 function collectRoster_() {
   const sheet = sheetByName_("Состав");
   const last = sheet.getLastRow();
   if (last < 4) return [];
-  const data = sheet.getRange(4, 1, last - 3, 9).getValues(); // A:I
+  const stats = promotionStatsByName_();
+  const data = sheet.getRange(4, 1, last - 3, 13).getValues(); // A:M
   const out = [];
   data.forEach(function (r) {
     const fio = String(r[0]).trim();
     if (!fio) return;
+    const personStats = stats[fio] || {};
     out.push({
       fio: fio, rank: String(r[2]).trim(), position: String(r[3]).trim(),
-      department: String(r[4]).trim(), status: String(r[8]).trim(),
+      department: String(r[4]).trim(), group: String(r[5]).trim(),
+      joinedAt: rosterDate_(r[6]), status: String(r[8]).trim(),
+      warnings: Number(r[11]) || 0, reprimands: Number(r[12]) || 0,
+      transferredCases: Number(personStats.transferredCases) || 0,
+      publicServiceCases: Number(personStats.publicServiceCases) || 0,
+      refusals: Number(personStats.refusals) || 0,
     });
   });
   return out;

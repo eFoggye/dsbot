@@ -1,6 +1,6 @@
 /**
  * Реверс-публикатор: периодически опрашивает очередь заданий в таблице (через Web App)
- * и публикует в Discord — дела в «дела-ск» (embed) и состав в «состав-ск» (content).
+ * и публикует в Discord — дела в «дела-ск» (embed) и состав в «состав-ск» (embeds).
  * Плюс архивация дела по реакции ✅ от прокуратуры.
  */
 
@@ -79,16 +79,16 @@ async function publishRoster(client, job, rosterMessageIds, config, logger) {
   if (canEdit) {
     for (let i = 0; i < messages.length; i++) {
       const m = await channel.messages.fetch(rosterMessageIds[i]).catch(() => null);
-      if (m) { await m.edit({ content: messages[i], allowedMentions: { parse: [] } }); newIds.push(m.id); }
-      else { const sent = await channel.send({ content: messages[i], allowedMentions: { parse: [] } }); newIds.push(sent.id); }
+      if (m) { await m.edit(messages[i]); newIds.push(m.id); }
+      else { const sent = await channel.send(messages[i]); newIds.push(sent.id); }
     }
   } else {
     for (const oldId of rosterMessageIds) {
       const m = await channel.messages.fetch(oldId).catch(() => null);
       if (m) await m.delete().catch(() => {});
     }
-    for (const content of messages) {
-      const sent = await channel.send({ content, allowedMentions: { parse: [] } });
+    for (const payload of messages) {
+      const sent = await channel.send(payload);
       newIds.push(sent.id);
     }
   }

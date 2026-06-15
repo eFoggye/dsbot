@@ -1,78 +1,163 @@
 /**
- * Сборка сообщения состава для канала «состав-ск» (формат Вариант А — content).
- * Строка: «<значок роли> Должность — @ФИО <погоны>», группировка по отделам,
- * вакансии должностей Аппарата без людей = «Набор не ведётся».
+ * Сборка embed-сообщений состава для канала «состав-ск».
  *
- * @плашки следователей бот резолвит по нику (displayName == ФИО). Кастомные эмодзи
- * и role ID должностей — из publishConfig (заполнить через `npm run discover`).
+ * Формат повторяет текущую публикацию состава: разделы, строки
+ * «роль должности - сотрудник [погоны]», вакансии там, где они нужны.
  */
 
 import {
-  ROSTER_SECTIONS, APPARAT_POSITIONS, RANK_EMOJI,
-  POSITION_ROLE_IDS, positionEmoji,
+  COAT_OF_ARMS_URL,
+  EMBED_FOOTER,
+  RANK_EMOJI,
+  ROSTER_COLOR,
+  ROSTER_SECTIONS,
+  POSITION_ROLE_IDS,
+  positionEmoji,
 } from "./publishConfig.js";
 
-const DISCORD_LIMIT = 1900; // запас от лимита 2000
+function escapeMarkdown(text) {
+  return String(text ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/([*_`~|])/g, "\\$1");
+}
 
-// Ищет участника по точному совпадению ника с ФИО. Требует загруженный members cache.
 function resolveMention(guild, fio) {
-  if (!guild) return fio;
+  if (!guild) return escapeMarkdown(fio);
   const member = guild.members.cache.find(
     (m) => (m.displayName || m.user.globalName || m.user.username) === fio,
   );
-  return member ? `<@${member.id}>` : fio;
+  return member ? `<@${member.id}>` : escapeMarkdown(fio);
 }
 
-// «<значок> Должность» — упоминание роли должности, если известен её ID, иначе текст.
 function positionLabel(position) {
-  const emoji = positionEmoji(position);
   const roleId = POSITION_ROLE_IDS[position];
-  if (roleId) return `<@&${roleId}>`; // у роли в названии обычно уже есть значок
-  return `${emoji} ${position}`.trim();
+  if (roleId) return `<@&${roleId}>`;
+  return `${positionEmoji(position)} ${escapeMarkdown(position || "Неизвестная роль")}`.trim();
 }
 
-function personLine(guild, person) {
-  const rankEmoji = RANK_EMOJI[person.rank] || "";
-  const mention = resolveMention(guild, person.fio);
-  return `${positionLabel(person.position)} — ${mention}${rankEmoji ? " " + rankEmoji : ""}`;
+function rankBrackets(rank) {
+  const label = RANK_EMOJI[rank] || escapeMarkdown(rank || "—");
+  return `[ ${label} ]`;
+}
+
+function toNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function formatDate(value) {
+  if (!value) return "—";
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return "—";
+    if (/^\d{2}\.\d{2}\.\d{4}$/.test(trimmed)) return escapeMarkdown(trimmed);
+  }
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isNaN(date.getTime())) {
+    return new Intl.DateTimeFormat("ru-RU", {
+      timeZone: "Europe/Moscow",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    }).format(date);
+  }
+  return escapeMarkdown(value);
+}
+
+function personLine(guild, person, bullet = "") {
+  const rank = rankBrackets(person.rank);
+  const warnings = toNumber(person.warnings);
+  const reprimands = toNumber(person.reprimands);
+  return [
+    `${bullet}${positionLabel(person.position)} - ${resolveMention(guild, person.fio)}${rank ? ` ${rank}` : ""}`,
+    `Предупреждения: ${warnings}/3 | Выговоры: ${reprimands}/3 | Дата вступления: ${formatDate(person.joinedAt)}`,
+  ].join("\n");
+}
+
+function vacancyLine(position, bullet = "") {
+  return `${bullet}${positionLabel(position)} - *Вакантно*`;
+}
+
+function isManagement(person) {
+  return person.position === "Руководитель управления";
+}
+
+function sectionPeople(active, section) {
+  switch (section.key) {
+    case "management":
+      return active.filter(isManagement);
+    case "apparatus":
+      return active.filter((p) =>
+        p.department === "Аппарат руководителя ГСУ СК России" && !isManagement(p));
+    case "investigation":
+      return active.filter((p) => p.department === "Следственный отдел (СО)");
+    case "training":
+      return active.filter((p) => p.department === "Отдел профессиональной подготовки (ОПП)");
+    default:
+      return [];
+  }
+}
+
+function bySectionPosition(section) {
+  return (a, b) => {
+    const ai = section.positions.indexOf(a.position);
+    const bi = section.positions.indexOf(b.position);
+    const ao = ai >= 0 ? ai : 999;
+    const bo = bi >= 0 ? bi : 999;
+    if (ao !== bo) return ao - bo;
+    return String(a.fio).localeCompare(String(b.fio), "ru");
+  };
+}
+
+function descriptionForSection(section, people, guild) {
+  const sorted = [...people].sort(bySectionPosition(section));
+  const lines = [];
+  const used = new Set();
+
+  for (const position of section.positions) {
+    const byPosition = sorted.filter((person) => person.position === position);
+    if (byPosition.length) {
+      byPosition.forEach((person) => {
+        lines.push(personLine(guild, person, section.bullet || ""));
+        used.add(person);
+      });
+    } else if (section.showVacancies) {
+      lines.push(vacancyLine(position, section.bullet || ""));
+    }
+  }
+
+  for (const person of sorted) {
+    if (!used.has(person)) lines.push(personLine(guild, person, section.bullet || ""));
+  }
+
+  return lines.length ? lines.join("\n") : "*Вакантно*";
+}
+
+function buildEmbed(section, people, guild, index, total) {
+  const embed = {
+    color: section.color ?? ROSTER_COLOR,
+    title: `${section.icon} | ${section.title}:`,
+    description: descriptionForSection(section, people, guild),
+  };
+
+  if (index === 0) embed.thumbnail = { url: COAT_OF_ARMS_URL };
+  if (index === total - 1) {
+    embed.footer = { text: EMBED_FOOTER, icon_url: COAT_OF_ARMS_URL };
+    embed.timestamp = new Date().toISOString();
+  }
+
+  return embed;
 }
 
 /**
- * @param roster — массив { fio, rank, position, department, status }
+ * @param roster — массив { fio, rank, position, department, group, status }
  * @param guild  — Discord Guild (для резолва ников); может быть null (тогда ФИО текстом)
- * @returns массив строк-сообщений (по 1 на каждое; разбито под лимит Discord)
+ * @returns массив payload-объектов для channel.send / message.edit
  */
 export function buildRosterMessages(roster, guild) {
   const active = (roster || []).filter((p) => p.fio && p.status === "Активен");
-  const blocks = [];
-
-  for (const section of ROSTER_SECTIONS) {
-    const people = active.filter((p) => p.department === section.department);
-    const lines = [section.header];
-
-    for (const p of people) lines.push(personLine(guild, p));
-
-    // Вакансии Аппарата: должности из списка, которых нет ни у кого.
-    if (section.department === ROSTER_SECTIONS[0].department) {
-      const taken = new Set(people.map((p) => p.position));
-      for (const pos of APPARAT_POSITIONS) {
-        if (!taken.has(pos)) lines.push(`${positionEmoji(pos)} ${pos} — Набор не ведётся`);
-      }
-    }
-    blocks.push(lines.join("\n"));
-  }
-
-  // Склеиваем блоки в сообщения, не превышая лимит Discord.
-  const messages = [];
-  let buf = "";
-  for (const block of blocks) {
-    if (buf && (buf.length + block.length + 2) > DISCORD_LIMIT) {
-      messages.push(buf);
-      buf = block;
-    } else {
-      buf = buf ? `${buf}\n\n${block}` : block;
-    }
-  }
-  if (buf) messages.push(buf);
-  return messages;
+  return ROSTER_SECTIONS.map((section, index) => ({
+    embeds: [buildEmbed(section, sectionPeople(active, section), guild, index, ROSTER_SECTIONS.length)],
+    allowedMentions: { parse: [] },
+  }));
 }
