@@ -337,6 +337,15 @@ const PUBLISHED_SHEET = "Опубликованные дела"; // A=messageId,
 const PGSKO_SHEET = "ПГСкО";
 const PGSKO_STATUS_PENDING = "На проверке";
 const PGSKO_STATUS_APPROVED = "Зачтено";
+const PGSKO_FORM_TITLE = "ПГСкО — отчёт о привлечении к ответственности";
+const PGSKO_FORM_ITEMS = [
+  "Ник следователя",
+  "Статик следователя",
+  "Ник привлеченного сотрудника",
+  "Статик привлеченного сотрудника",
+  "Скриншот / доказательство",
+  "Комментарий",
+];
 
 // Кладёт задание в очередь (вызывается из onEdit / меню публикации состава).
 function enqueuePublish_(type, dataObj) {
@@ -513,6 +522,76 @@ function getActiveStaffNames_() {
   return out.sort(function (a, b) { return a.localeCompare(b, "ru"); });
 }
 
+function pgSkOFormItemCounts_(form) {
+  const counts = {};
+  form.getItems().forEach(function (item) {
+    const title = String(item.getTitle()).trim();
+    if (PGSKO_FORM_ITEMS.indexOf(title) === -1) return;
+    counts[title] = (counts[title] || 0) + 1;
+  });
+  return counts;
+}
+
+function hasDuplicatePgSkOFormItems_(form) {
+  const counts = pgSkOFormItemCounts_(form);
+  return PGSKO_FORM_ITEMS.some(function (title) { return (counts[title] || 0) > 1; });
+}
+
+function hasAllPgSkOFormItems_(form) {
+  const counts = pgSkOFormItemCounts_(form);
+  return PGSKO_FORM_ITEMS.every(function (title) { return (counts[title] || 0) === 1; });
+}
+
+function findPgSkOFormItem_(form, title) {
+  const items = form.getItems();
+  for (let i = 0; i < items.length; i++) {
+    if (String(items[i].getTitle()).trim() === title) return items[i];
+  }
+  return null;
+}
+
+function addPgSkOFormItems_(form, staff) {
+  if (staff.length) {
+    form.addListItem()
+      .setTitle("Ник следователя")
+      .setChoiceValues(staff)
+      .setRequired(true);
+  } else {
+    form.addTextItem().setTitle("Ник следователя").setRequired(true);
+  }
+  form.addTextItem().setTitle("Статик следователя").setRequired(true);
+  form.addTextItem().setTitle("Ник привлеченного сотрудника").setRequired(true);
+  form.addTextItem().setTitle("Статик привлеченного сотрудника").setRequired(true);
+  try {
+    form.addFileUploadItem()
+      .setTitle("Скриншот / доказательство")
+      .setHelpText("Прикрепите скриншот, подтверждающий привлечение к ответственности.")
+      .setRequired(true);
+  } catch (err) {
+    form.addTextItem()
+      .setTitle("Скриншот / доказательство")
+      .setHelpText("Вставьте ссылку на скриншот, если загрузка файлов недоступна.")
+      .setRequired(true);
+  }
+  form.addParagraphTextItem().setTitle("Комментарий").setRequired(false);
+}
+
+function refreshPgSkOFormStaffList_(form, staff) {
+  if (!staff.length) return;
+  const item = findPgSkOFormItem_(form, "Ник следователя");
+  if (!item || item.getType() !== FormApp.ItemType.LIST) return;
+  item.asListItem().setChoiceValues(staff).setRequired(true);
+}
+
+function ensurePgSkOFormDestination_(form) {
+  const spreadsheetId = ss_().getId();
+  let destinationId = "";
+  try { destinationId = form.getDestinationId(); } catch (ignore) {}
+  if (destinationId !== spreadsheetId) {
+    form.setDestination(FormApp.DestinationType.SPREADSHEET, spreadsheetId);
+  }
+}
+
 function appendPgSkOReport_(data) {
   const sheet = ensurePgSkOSheet_();
   const reportId = data.reportId || ("PGSKO-" + Utilities.getUuid().slice(0, 8).toUpperCase());
@@ -578,48 +657,31 @@ function setupPgSkOForm_() {
   ensurePgSkOSheet_();
   const props = PropertiesService.getScriptProperties();
   let form;
+  let recreated = false;
   const existingId = props.getProperty("PGSKO_FORM_ID");
   if (existingId) {
     try { form = FormApp.openById(existingId); } catch (ignore) {}
   }
-  if (!form) form = FormApp.create("ПГСкО — отчёт о привлечении к ответственности");
+  if (form && hasDuplicatePgSkOFormItems_(form)) {
+    form = null;
+    recreated = true;
+  }
+  if (!form) form = FormApp.create(PGSKO_FORM_TITLE);
 
-  form.setTitle("ПГСкО — отчёт о привлечении к ответственности");
+  form.setTitle(PGSKO_FORM_TITLE);
   form.setDescription("Заполняется сотрудником СК после привлечения государственного служащего к ответственности.");
   form.setCollectEmail(false);
-  form.setDestination(FormApp.DestinationType.SPREADSHEET, ss_().getId());
-
-  form.getItems().forEach(function (item) { form.deleteItem(item); });
+  ensurePgSkOFormDestination_(form);
 
   const staff = getActiveStaffNames_();
-  if (staff.length) {
-    form.addListItem()
-      .setTitle("Ник следователя")
-      .setChoiceValues(staff)
-      .setRequired(true);
-  } else {
-    form.addTextItem().setTitle("Ник следователя").setRequired(true);
-  }
-  form.addTextItem().setTitle("Статик следователя").setRequired(true);
-  form.addTextItem().setTitle("Ник привлеченного сотрудника").setRequired(true);
-  form.addTextItem().setTitle("Статик привлеченного сотрудника").setRequired(true);
-  try {
-    form.addFileUploadItem()
-      .setTitle("Скриншот / доказательство")
-      .setHelpText("Прикрепите скриншот, подтверждающий привлечение к ответственности.")
-      .setRequired(true);
-  } catch (err) {
-    form.addTextItem()
-      .setTitle("Скриншот / доказательство")
-      .setHelpText("Вставьте ссылку на скриншот, если загрузка файлов недоступна.")
-      .setRequired(true);
-  }
-  form.addParagraphTextItem().setTitle("Комментарий").setRequired(false);
+  if (!hasAllPgSkOFormItems_(form)) addPgSkOFormItems_(form, staff);
+  refreshPgSkOFormStaffList_(form, staff);
 
   props.setProperty("PGSKO_FORM_ID", form.getId());
   props.setProperty("PGSKO_FORM_URL", form.getPublishedUrl());
   installPgSkOFormTrigger_();
-  SpreadsheetApp.getActive().toast("Форма ПГСкО готова: " + form.getPublishedUrl(), "ПГСкО", 12);
+  const prefix = recreated ? "Старая форма была с дублями, создана новая чистая: " : "Форма ПГСкО готова: ";
+  SpreadsheetApp.getActive().toast(prefix + form.getPublishedUrl(), "ПГСкО", 12);
   return form.getPublishedUrl();
 }
 
