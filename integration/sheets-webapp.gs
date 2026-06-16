@@ -592,6 +592,17 @@ function ensurePgSkOFormDestination_(form) {
   }
 }
 
+function restorePgSkOFormIfTrashed_(formId) {
+  if (!formId) return false;
+  try {
+    const file = DriveApp.getFileById(formId);
+    if (file.isTrashed()) file.setTrashed(false);
+    return true;
+  } catch (ignore) {
+    return false;
+  }
+}
+
 function appendPgSkOReport_(data) {
   const sheet = ensurePgSkOSheet_();
   const reportId = data.reportId || ("PGSKO-" + Utilities.getUuid().slice(0, 8).toUpperCase());
@@ -660,6 +671,7 @@ function setupPgSkOForm_() {
   let recreated = false;
   const existingId = props.getProperty("PGSKO_FORM_ID");
   if (existingId) {
+    restorePgSkOFormIfTrashed_(existingId);
     try { form = FormApp.openById(existingId); } catch (ignore) {}
   }
   if (form && hasDuplicatePgSkOFormItems_(form)) {
@@ -692,6 +704,7 @@ function showPgSkOFormUrl_() {
   let editUrl = "";
 
   if (formId) {
+    restorePgSkOFormIfTrashed_(formId);
     try {
       const form = FormApp.openById(formId);
       publishedUrl = form.getPublishedUrl();
