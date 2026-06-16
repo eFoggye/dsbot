@@ -685,6 +685,43 @@ function setupPgSkOForm_() {
   return form.getPublishedUrl();
 }
 
+function showPgSkOFormUrl_() {
+  const props = PropertiesService.getScriptProperties();
+  const formId = props.getProperty("PGSKO_FORM_ID");
+  let publishedUrl = props.getProperty("PGSKO_FORM_URL") || "";
+  let editUrl = "";
+
+  if (formId) {
+    try {
+      const form = FormApp.openById(formId);
+      publishedUrl = form.getPublishedUrl();
+      editUrl = form.getEditUrl();
+      props.setProperty("PGSKO_FORM_URL", publishedUrl);
+    } catch (ignore) {}
+  }
+
+  const ui = SpreadsheetApp.getUi();
+  if (!publishedUrl && !editUrl) {
+    ui.alert(
+      "Форма ПГСкО не найдена",
+      "Сначала нажми «Создать/обновить форму ПГСкО», затем снова открой ссылку.",
+      ui.ButtonSet.OK
+    );
+    return "";
+  }
+
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:Arial,sans-serif;padding:16px;line-height:1.5">' +
+      '<div style="font-size:16px;font-weight:700;margin-bottom:10px">Форма ПГСкО</div>' +
+      (publishedUrl ? '<div><a href="' + publishedUrl + '" target="_blank">Открыть форму для заполнения</a></div>' : '') +
+      (editUrl ? '<div style="margin-top:8px"><a href="' + editUrl + '" target="_blank">Открыть форму для редактирования</a></div>' : '') +
+      '<div style="margin-top:12px;color:#666;font-size:12px">Если ссылка не открылась автоматически, нажми нужный пункт выше.</div>' +
+    '</div>'
+  ).setWidth(420).setHeight(170);
+  ui.showModalDialog(html, "Форма ПГСкО");
+  return publishedUrl || editUrl;
+}
+
 function installPgSkOFormTrigger_() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === "onPgSkOFormSubmit_") ScriptApp.deleteTrigger(t);
