@@ -53,7 +53,11 @@ export function parseDiscipline(event) {
     updates["Отработка"] = workoff;
     updates["Статус отработки"] = "Назначена";
   }
-  if (removal) updates["Статус отработки"] = "Снято";
+  if (removal) {
+    updates["Предупреждения"] = 0;
+    updates["Выговоры"] = 0;
+    updates["Статус отработки"] = "Снято";
+  }
 
   return {
     type: "discipline_event",

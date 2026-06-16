@@ -1,4 +1,4 @@
-import { buildUnparsedAction, rankAliases } from "./helpers.js";
+import { buildUnparsedAction, getMessageText, rankAliases } from "./helpers.js";
 
 // Реальный формат канала «состав-ск» (одно РЕДАКТИРУЕМОЕ сообщение):
 //   ## <:эмодзи:> | Руководящий состав ГСУ СК России по АФО:
@@ -28,6 +28,16 @@ function detectSubDepartment(position) {
   return "";
 }
 
+function detectGroup(department, position) {
+  if (department === "Следственный отдел (СО)") return detectSubDepartment(position);
+  if (department === "Отдел профессиональной подготовки (ОПП)") {
+    if (/кадр/iu.test(position)) return "Кадры";
+    return "ОПП";
+  }
+  if (department === "Аппарат руководителя ГСУ СК России") return "Руководство";
+  return "";
+}
+
 function rolesById(event) {
   const map = {};
   for (const r of event.roleMentions || []) map[r.id] = r.name || "";
@@ -41,7 +51,7 @@ function usersById(event) {
 }
 
 export function parseStaff(event) {
-  const text = event.content || event.cleanContent || "";
+  const text = getMessageText(event);
   const roleName = rolesById(event);
   const userName = usersById(event);
 
@@ -67,6 +77,7 @@ export function parseStaff(event) {
     const position = roleName[m[1]] || "";
     const name = userName[m[2]] || "";
     const rank = rankAliases[m[3].toLowerCase()] || m[3];
+    const group = detectGroup(department, position);
     if (!name) continue;
 
     rows.push({
@@ -74,7 +85,9 @@ export function parseStaff(event) {
       "Звание": rank,
       "Должность": position,
       "Отдел": department,
-      "Подотдел": department === "Следственный отдел (СО)" ? detectSubDepartment(position) : "",
+      "Подразделение": department,
+      "Подотдел": group,
+      "Группа": group,
       "Статус": "Активен",
     });
   }

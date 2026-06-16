@@ -19,6 +19,7 @@
  *   - raw_message             -> положить сырое сообщение в «Discord импорт»
  *   - pgsko_published         -> сохранить Discord-сообщение отчёта ПГСкО
  *   - approve_pgsko_by_message-> зачесть ПГСкО по ✅ под Discord-сообщением
+ *   - portal_*                -> действия портала ГАС «Следак» (см. Portal.gs)
  */
 
 // На какой строке у каждого листа находятся заголовки колонок.
@@ -32,6 +33,8 @@ const HEADER_ROWS = {
   "ПГСкО": 1,
   "Discord импорт": 1,
   "Бот-лог": 1,
+  "Пользователи портала": 1,
+  "Сессии портала": 1,
 };
 
 function doGet(e) {
@@ -51,12 +54,23 @@ function doPost(e) {
     const payload = JSON.parse((e && e.postData && e.postData.contents) || "{}");
     const action = payload.action || payload.sheetAction || payload;
     const meta = payload.meta || {};
-    if (!action || !action.type) {
+    const actionType = typeof action === "string" ? action : (action && action.type);
+    const actionObj = typeof action === "object" ? action : { type: actionType };
+    if (!actionType) {
       return jsonOut({ ok: false, error: "no action" });
     }
 
     let result;
-    switch (action.type) {
+    if (String(actionType).indexOf("portal_") === 0) {
+      if (typeof handlePortalAction_ !== "function") {
+        return jsonOut({ ok: false, error: "Portal.gs не подключён в Apps Script" });
+      }
+      result = handlePortalAction_(action, payload, e);
+      logAction_({ type: actionType, targetSheet: "Портал" }, meta, "ok", JSON.stringify(result));
+      return jsonOut({ ok: true, result: result });
+    }
+
+    switch (actionType) {
       case "append_active_case":       result = appendByHeaders_("Дела в производстве", action.row); break;
       case "case_status_event":        result = updateCaseStatus_(action); break;
       case "upsert_staff_rows":        result = upsertStaffRows_(action); break;
@@ -70,10 +84,12 @@ function doPost(e) {
       case "pgsko_published":          result = onPgSkOPublished_(action); break;
       case "approve_pgsko_by_message": result = approvePgSkOByMessage_(action); break;
       case "archive_case_by_message":  result = archiveCaseByMessage_(action); break;
-      default:                         result = appendImport_(action, meta, "неизвестный тип: " + action.type);
+      case "act_review_published":     result = onActReviewPublished_(action); break;
+      case "act_decided_done":         result = onActDecidedDone_(action); break;
+      default:                         result = appendImport_(actionObj, meta, "неизвестный тип: " + actionType);
     }
 
-    logAction_(action, meta, "ok", JSON.stringify(result));
+    logAction_(actionObj, meta, "ok", JSON.stringify(result));
     return jsonOut({ ok: true, result: result });
   } catch (err) {
     try { logAction_({ type: "error" }, {}, "error", String(err)); } catch (ignore) {}
@@ -87,6 +103,14 @@ function appendByHeaders_(sheetName, rowObj) {
   if (!rowObj) return { skipped: "empty row" };
   const sheet = sheetByName_(sheetName);
   const map = headerMap_(sheet);
+  const caseNumber = String(rowObj["Номер дела"] || "").trim();
+  if (sheetName === "Дела в производстве" && caseNumber) {
+    const existingRow = findRow_(sheet, "Номер дела", caseNumber);
+    if (existingRow >= 0) {
+      setupCaseRow_(sheet, existingRow);
+      return { sheet: sheetName, row: existingRow, skipped: "дело уже есть в производстве", caseNumber: caseNumber };
+    }
+  }
   const targetRow = firstEmptyRow_(sheet);
   writeRow_(sheet, targetRow, map, rowObj);
   if (sheetName === "Дела в производстве") setupCaseRow_(sheet, targetRow);
@@ -112,7 +136,7 @@ function updateCaseStatus_(action) {
   const data = action.data || {};
   const updates = action.updates || {};
   const status = updates["Статус"] || "";
-  const isOpening = status === "Возбуждено" || data.event === "case_opened";
+  const isOpening = status === "В производстве" || status === "Возбуждено" || data.event === "case_opened";
 
   if (isOpening) {
     const targetRow = firstEmptyRow_(sheet);
@@ -121,7 +145,7 @@ function updateCaseStatus_(action) {
       "Код дела": data.caseCode || "",
       "Номер дела": caseNumber,
       "Следователь": data.investigatorName || updates["Закрыл / изменил"] || "",
-      "Статус": "Возбуждено",
+      "Статус": "В производстве",
       "Ссылка на документ": updates["Ссылка на публикацию"] || "",
     };
     // Это событие из «дела-ск», а не из распределения: пишем полный номер дела.
@@ -251,6 +275,10 @@ const HEADER_ALIASES = {
   "Ссылка на материалы": ["Ссылка на документ", "Ссылка на публикацию"],
   "Сотрудник": ["ФИО"],
   "ФИО": ["Сотрудник"],
+  "Отдел": ["Подразделение"],
+  "Подразделение": ["Отдел"],
+  "Подотдел": ["Группа"],
+  "Группа": ["Подотдел"],
 };
 
 function colForHeader_(map, header) {
@@ -309,7 +337,7 @@ function ensureSheet_(name, headers) {
 function checkSecret_(e) {
   const expected = PropertiesService.getScriptProperties().getProperty("WEBHOOK_SECRET");
   if (!expected) return false; // секрет не настроен — запрещаем всё
-  const got = (e && e.parameter && e.parameter.token) || "";
+  const got = (e && e.parameter && (e.parameter.token || e.parameter.secret)) || "";
   return got === expected;
 }
 
@@ -406,6 +434,7 @@ function onReportPublished_(action) {
 
 // ✅ под делом → находим номер дела по messageId и переносим дело в архив.
 function archiveCaseByMessage_(action) {
+  if (!action.messageId) return { skipped: "нет messageId" };
   const sheet = ss_().getSheetByName(PUBLISHED_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return { skipped: "нет опубликованных дел" };
   const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
@@ -651,7 +680,30 @@ function onPgSkOPublished_(action) {
   return { ok: true, reportId: action.reportId || "", messageId: action.messageId || "" };
 }
 
+/* === Акты на одобрение (документооборот портала «Следак») === */
+const ACTS_SHEET = "Акты на одобрение";
+
+// Бот опубликовал карточку акта в «акты-и-делоодобрение» → сохраняем messageId.
+function onActReviewPublished_(action) {
+  if (action.queueId) markJobDone_(action.queueId);
+  const sheet = ss_().getSheetByName(ACTS_SHEET);
+  if (!sheet || !action.actId) return { ok: true, recorded: action.actId || "", messageId: action.messageId || "" };
+  const row = findRow_(sheet, "ID акта", action.actId);
+  if (row >= 0) {
+    const map = headerMap_(sheet);
+    setValueByHeaders_(sheet, row, map, ["Discord message ID"], action.messageId || "");
+  }
+  return { ok: true, recorded: action.actId, messageId: action.messageId || "" };
+}
+
+// Бот обновил карточку акта решением (одобрен/отклонён) → просто закрываем задание.
+function onActDecidedDone_(action) {
+  if (action.queueId) markJobDone_(action.queueId);
+  return { ok: true, actId: action.actId || "" };
+}
+
 function approvePgSkOByMessage_(action) {
+  if (!action.messageId) return { skipped: "нет messageId" };
   const sheet = ensurePgSkOSheet_();
   const row = findPgSkORow_(sheet, "Discord message ID", action.messageId || "");
   if (row < 0) return { skipped: "отчёт ПГСкО по messageId не найден" };
@@ -774,7 +826,7 @@ function publishOnEdit_(e) {
     const caseNumber = String(sheet.getRange(row, map["Номер дела"]).getValue()).trim();
     const status = String(sheet.getRange(row, map["Статус"]).getValue()).trim();
     const investigator = String(sheet.getRange(row, map["Следователь"]).getValue()).trim();
-    const publishable = ["Возбуждено", "Отказано в возбуждении", "Прекращено", "Передано в прокуратуру"];
+    const publishable = ["В производстве", "Отказано в возбуждении", "Прекращено", "Передано в прокуратуру"];
     const resultByStatus = {
       "Отказано в возбуждении": "Отказ в ВУД",
       "Прекращено": "Прекращено",
@@ -901,14 +953,16 @@ function collectWeeklyReport_() {
     const actMap = headerMap_(act);
     const v = act.getRange(4, 1, act.getLastRow() - 3, act.getLastColumn()).getValues();
     v.forEach(function (r) {
+      const caseNumber = String(valueFromRow_(r, actMap, ["Номер дела"])).trim();
+      if (!caseNumber) return;
       const post = valueFromRow_(r, actMap, ["Дата поступления"]);
       const status = String(valueFromRow_(r, actMap, ["Статус"])).trim();
       const due = valueFromRow_(r, actMap, ["Срок (истечения)", "Срок"]);
       if (inWeek(post)) opened++;
-      if (status === "Назначено" || status === "Возбуждено" || status === "Приостановлено") {
+      if (status === "Назначено" || status === "В производстве" || status === "Приостановлено") {
         inWork++;
       }
-      if (status === "Назначено" || status === "Возбуждено") {
+      if (status === "Назначено" || status === "В производстве") {
         if (due instanceof Date) {
           if (due < today0) overdue++;
           else if (due <= new Date(today0.getTime() + 3 * 86400000)) burning++;

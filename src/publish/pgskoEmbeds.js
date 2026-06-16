@@ -19,6 +19,7 @@ function valueOrDash(value) {
 function proofText(url) {
   const text = String(url ?? "").trim();
   if (!text) return "—";
+  if (!/^https?:\/\//i.test(text)) return escapeMarkdown(text);
   return `[Открыть доказательство](${text})`;
 }
 

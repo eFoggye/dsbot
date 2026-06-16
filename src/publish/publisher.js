@@ -9,6 +9,7 @@ import { buildCaseMessage } from "./caseEmbeds.js";
 import { buildPgSkOMessage } from "./pgskoEmbeds.js";
 import { buildRosterMessages } from "./rosterContent.js";
 import { buildReportMessage } from "./reportEmbed.js";
+import { buildActReviewMessage, buildActDecisionEdit } from "./actReviewEmbed.js";
 import {
   CHANNELS,
   PROSECUTOR_ROLE_ID,
@@ -46,6 +47,10 @@ async function pollOnce(client, config, logger) {
         await publishReport(client, job, config, logger);
       } else if (job.type === "pgsko_report") {
         await publishPgSkOReport(client, job, config, logger);
+      } else if (job.type === "act_review") {
+        await publishActReview(client, job, config, logger);
+      } else if (job.type === "act_decided") {
+        await editActDecision(client, job, config, logger);
       } else {
         logger.warn("Неизвестный тип задания публикации", { type: job.type });
       }
@@ -141,6 +146,40 @@ async function publishPgSkOReport(client, job, config, logger) {
     },
     {}, config, logger,
   );
+}
+
+async function publishActReview(client, job, config, logger) {
+  if (!CHANNELS.actReview) {
+    logger.warn("Канал «акты-и-делоодобрение» не задан (ACT_REVIEW_CHANNEL_ID) — пропуск", { actId: job.actId });
+    await postAction({ type: "act_review_published", queueId: job.id, actId: job.actId || "", messageId: "" }, {}, config, logger);
+    return;
+  }
+  const channel = await client.channels.fetch(CHANNELS.actReview);
+  const sent = await channel.send(buildActReviewMessage(job));
+  logger.info("Акт отправлен на рассмотрение в акты-и-делоодобрение", { actId: job.actId, caseNumber: job.caseNumber, messageId: sent.id });
+  await postAction(
+    { type: "act_review_published", queueId: job.id, actId: job.actId || "", messageId: sent.id },
+    {}, config, logger,
+  );
+}
+
+// Решение по акту принято на сайте → редактируем карточку в «акты-и-делоодобрение».
+async function editActDecision(client, job, config, logger) {
+  if (!CHANNELS.actReview || !job.messageId) {
+    await postAction({ type: "act_decided_done", queueId: job.id, actId: job.actId || "" }, {}, config, logger);
+    return;
+  }
+  try {
+    const channel = await client.channels.fetch(CHANNELS.actReview);
+    const message = await channel.messages.fetch(job.messageId).catch(() => null);
+    if (message) {
+      await message.edit(buildActDecisionEdit(job));
+      logger.info("Карточка акта обновлена решением", { actId: job.actId, decision: job.decision || job.status });
+    }
+  } catch (error) {
+    logger.error("Не удалось обновить карточку акта", { error: error.message, actId: job.actId });
+  }
+  await postAction({ type: "act_decided_done", queueId: job.id, actId: job.actId || "" }, {}, config, logger);
 }
 
 // Обработчик реакции ✅ в «дела-ск» → архивация дела (вызывается из index.js).
