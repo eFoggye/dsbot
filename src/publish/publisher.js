@@ -11,6 +11,7 @@ import { buildPgSkOMessage } from "./pgskoEmbeds.js";
 import { buildRosterMessages } from "./rosterContent.js";
 import { buildReportMessage } from "./reportEmbed.js";
 import { buildActReviewMessage, buildActDecisionEdit } from "./actReviewEmbed.js";
+import { buildDisciplineMessage } from "./disciplineEmbed.js";
 import {
   CHANNELS,
   PROSECUTOR_ROLE_ID,
@@ -52,6 +53,8 @@ async function pollOnce(client, config, logger) {
         await publishActReview(client, job, config, logger);
       } else if (job.type === "act_decided") {
         await editActDecision(client, job, config, logger);
+      } else if (job.type === "discipline") {
+        await publishDiscipline(client, job, config, logger);
       } else {
         logger.warn("Неизвестный тип задания публикации", { type: job.type });
       }
@@ -191,6 +194,19 @@ async function editActDecision(client, job, config, logger) {
     logger.error("Не удалось обновить карточку акта", { error: error.message, actId: job.actId });
   }
   await acknowledge({ type: "act_decided_done", queueId: job.id, actId: job.actId || "" }, config, logger);
+}
+
+// Дисциплинарное взыскание выдано/снято на сайте → публикуем уведомление в канал взысканий.
+async function publishDiscipline(client, job, config, logger) {
+  if (!CHANNELS.discipline) {
+    logger.warn("Канал взысканий не задан (DISCIPLINE_CHANNEL_ID) — пропуск", { recordId: job.recordId });
+    await acknowledge({ type: "discipline_published", queueId: job.id }, config, logger);
+    return;
+  }
+  const channel = await client.channels.fetch(CHANNELS.discipline);
+  const sent = await channel.send(buildDisciplineMessage(job));
+  logger.info("Взыскание опубликовано", { recordId: job.recordId, action: job.action, type: job.type, messageId: sent.id });
+  await acknowledge({ type: "discipline_published", queueId: job.id, messageId: sent.id }, config, logger);
 }
 
 // Обработчик реакции ✅ в «дела-ск» → архивация дела (вызывается из index.js).

@@ -276,7 +276,18 @@ async function acknowledgeAction(sql, action) {
     return;
   }
 
-  if (type === "act_decided_done" || type === "roster_published" || type === "report_published") {
+  if (type === "roster_published") {
+    const ids = Array.isArray(action.messageIds) ? action.messageIds : [];
+    await sql`
+      INSERT INTO roster_publications (id, message_ids, updated_at)
+      VALUES ('roster', ${JSON.stringify(ids)}::jsonb, now())
+      ON CONFLICT (id) DO UPDATE SET message_ids = EXCLUDED.message_ids, updated_at = now()
+    `;
+    await markOutboxProcessed(sql, queueId);
+    return;
+  }
+
+  if (type === "act_decided_done" || type === "report_published" || type === "discipline_published") {
     await markOutboxProcessed(sql, queueId);
     return;
   }
@@ -380,6 +391,44 @@ async function buildJob(sql, event) {
       comment: report.comment,
     };
   }
+  if (event.event_type === "report_generated") {
+    return { id: event.id, type: "report", ...payload };
+  }
+  if (event.event_type === "roster_sync") {
+    const rows = await sql`
+      SELECT sm.fio, sm.rank, sm.status, sp.position, sp.department
+      FROM staff_members sm
+      LEFT JOIN LATERAL (
+        SELECT position, department FROM staff_positions WHERE staff_id = sm.id
+        ORDER BY display_order ASC, created_at ASC LIMIT 1
+      ) sp ON true
+      WHERE sm.status = 'Активен'
+    `;
+    const roster = rows.map((r) => ({
+      fio: r.fio,
+      rank: r.rank || "",
+      position: r.position || "",
+      department: r.department || "",
+      status: r.status,
+    }));
+    return { id: event.id, type: "roster", roster };
+  }
+  if (event.event_type === "discipline_issued" || event.event_type === "discipline_amnesty") {
+    return {
+      id: event.id,
+      type: "discipline",
+      action: event.event_type === "discipline_amnesty" ? "amnesty" : "issued",
+      recordId: payload.recordId || "",
+      disciplineType: payload.type || "",
+      fio: payload.fio || "",
+      reason: payload.reason || "",
+      workoff: payload.workoff || "",
+      count: payload.count,
+      issuerFio: payload.issuerFio || "",
+      issuerDiscord: payload.issuerDiscord || "",
+      targetDiscord: payload.targetDiscord || "",
+    };
+  }
   if (event.event_type === "case_act_submitted") {
     const rows = await sql`SELECT * FROM case_acts WHERE id = ${payload.actId || ""} LIMIT 1`;
     const act = rows[0];
@@ -438,7 +487,9 @@ export async function fetchPublishQueueFromSql(config, logger) {
         await markOutboxError(sql, row.id, `Unsupported or incomplete outbox event: ${row.event_type}`);
       }
     }
-    return { ok: true, jobs, rosterMessageIds: [] };
+    const rosterRow = await sql`SELECT message_ids FROM roster_publications WHERE id = 'roster' LIMIT 1`;
+    const rosterMessageIds = Array.isArray(rosterRow[0]?.message_ids) ? rosterRow[0].message_ids : [];
+    return { ok: true, jobs, rosterMessageIds };
   } catch (error) {
     logger.warn("Не удалось получить SQL-очередь публикаций", { error: error.message });
     return null;
