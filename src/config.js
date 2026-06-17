@@ -56,6 +56,9 @@ export function loadConfig({ requireRuntime = true } = {}) {
   const effectiveChannelIds = channelIds.size > 0 ? channelIds : new Set(defaultChannelIds);
   const outputDir = path.resolve(process.cwd(), process.env.OUTPUT_DIR?.trim() || "logs");
   const webhookUrl = validateWebhookUrl(process.env.OUTPUT_WEBHOOK_URL?.trim() ?? "");
+  const databaseUrl = (process.env.DATABASE_URL || process.env.POSTGRES_URL || "").trim();
+  const storage = (process.env.BOT_STORAGE || process.env.PORTAL_STORAGE || "").trim().toLowerCase();
+  const effectiveStorage = storage || (databaseUrl && !webhookUrl ? "postgres" : "apps_script");
 
   const errors = [];
   if (requireRuntime && !token) {
@@ -72,6 +75,10 @@ export function loadConfig({ requireRuntime = true } = {}) {
     outputDir,
     webhookUrl,
     webhookSecret: process.env.WEBHOOK_SECRET?.trim() ?? "",
+    databaseUrl,
+    storage: effectiveStorage,
+    useSql: Boolean(databaseUrl) && ["postgres", "sql", "both"].includes(effectiveStorage),
+    useWebhook: Boolean(webhookUrl) && effectiveStorage !== "postgres",
     // OCR через aitunnel (OpenAI-совместимый). OCR_API_KEY обязателен для включения OCR.
     ocrApiKey: (process.env.OCR_API_KEY || process.env.ANTHROPIC_API_KEY)?.trim() ?? "",
     ocrBaseUrl: process.env.OCR_BASE_URL?.trim() || "https://api.aitunnel.ru/v1",

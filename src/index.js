@@ -6,6 +6,7 @@ import { createLogger } from "./logger.js";
 import { normalizeMessage } from "./messageNormalizer.js";
 import { saveMessageToFiles } from "./sinks/fileSink.js";
 import { postMessageEvent, postAction } from "./sinks/httpSink.js";
+import { postMessageEventToSql, postActionToSql } from "./sinks/sqlSink.js";
 import { recognizeOrder, orderActionsToSheetActions } from "./ocr/orderOcr.js";
 import { startPublisher, handleArchiveReaction, handlePgSkOReaction } from "./publish/publisher.js";
 
@@ -33,6 +34,8 @@ client.once(Events.ClientReady, (readyClient) => {
     channels: Array.from(config.channelIds),
     outputDir: config.outputDir,
     webhookEnabled: Boolean(config.webhookUrl),
+    sqlEnabled: config.useSql,
+    storage: config.storage,
     ignoreBots: config.ignoreBots,
   });
   // Реверс-публикации (таблица → Discord): опрос очереди заданий.
@@ -43,7 +46,7 @@ async function processMessage(message, source) {
   try {
     const event = normalizeMessage(message);
     await saveMessageToFiles(event, config);
-    await postMessageEvent(event, config, logger);
+    await deliverMessageEvent(event);
     logger.info("Captured message", {
       source,
       channelId: event.channelId,
@@ -66,6 +69,16 @@ async function processMessage(message, source) {
   }
 }
 
+async function deliverMessageEvent(event) {
+  if (config.useWebhook) await postMessageEvent(event, config, logger);
+  if (config.useSql) await postMessageEventToSql(event, config, logger);
+}
+
+async function deliverAction(action, meta) {
+  if (config.useWebhook) await postAction(action, meta, config, logger);
+  if (config.useSql) await postActionToSql(action, meta, config, logger);
+}
+
 async function processOrderOcr(event) {
   const imageUrls = event.sheetAction?.data?.imageUrls || [];
   const meta = { messageUrl: event.messageUrl, channel: event.channel };
@@ -84,7 +97,7 @@ async function processOrderOcr(event) {
       }
       const sheetActions = orderActionsToSheetActions(actions);
       for (const action of sheetActions) {
-        await postAction(action, meta, config, logger);
+        await deliverAction(action, meta);
       }
       logger.info("OCR: приказ обработан", { messageId: event.messageId, actions: sheetActions.length });
     } catch (error) {

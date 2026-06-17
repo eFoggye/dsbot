@@ -5,6 +5,7 @@
  */
 
 import { fetchPublishQueue, postAction } from "../sinks/httpSink.js";
+import { fetchPublishQueueFromSql, postActionToSql } from "../sinks/sqlSink.js";
 import { buildCaseMessage } from "./caseEmbeds.js";
 import { buildPgSkOMessage } from "./pgskoEmbeds.js";
 import { buildRosterMessages } from "./rosterContent.js";
@@ -22,11 +23,11 @@ import {
 const POLL_INTERVAL_MS = 15000;
 
 export function startPublisher(client, config, logger) {
-  if (!config.webhookUrl) {
-    logger.info("Публикатор выключен: не задан OUTPUT_WEBHOOK_URL");
+  if (!config.useWebhook && !config.useSql) {
+    logger.info("Публикатор выключен: не задан OUTPUT_WEBHOOK_URL или DATABASE_URL");
     return;
   }
-  logger.info("Публикатор запущен (polling очереди)", { intervalMs: POLL_INTERVAL_MS });
+  logger.info("Публикатор запущен (polling очереди)", { intervalMs: POLL_INTERVAL_MS, storage: config.storage });
   const tick = () => pollOnce(client, config, logger).catch((e) =>
     logger.error("Ошибка опроса очереди", { error: e.message }));
   setInterval(tick, POLL_INTERVAL_MS);
@@ -34,7 +35,7 @@ export function startPublisher(client, config, logger) {
 }
 
 async function pollOnce(client, config, logger) {
-  const queue = await fetchPublishQueue(config, logger);
+  const queue = await fetchQueue(config, logger);
   if (!queue || !Array.isArray(queue.jobs) || queue.jobs.length === 0) return;
 
   for (const job of queue.jobs) {
@@ -60,22 +61,32 @@ async function pollOnce(client, config, logger) {
   }
 }
 
+async function fetchQueue(config, logger) {
+  if (config.useSql) return fetchPublishQueueFromSql(config, logger);
+  return fetchPublishQueue(config, logger);
+}
+
+async function acknowledge(action, config, logger) {
+  if (config.useSql) return postActionToSql(action, {}, config, logger);
+  return postAction(action, {}, config, logger);
+}
+
 async function publishCase(client, job, config, logger) {
   const channel = await client.channels.fetch(CHANNELS.cases);
   const msg = buildCaseMessage({ status: job.status, caseNumber: job.caseNumber, investigator: job.investigator });
   if (!msg) {
     logger.warn("Статус дела не публикуется", { status: job.status, caseNumber: job.caseNumber });
-    await postAction(
+    await acknowledge(
       { type: "case_published", queueId: job.id, messageId: "", caseNumber: job.caseNumber, status: job.status },
-      {}, config, logger,
+      config, logger,
     );
     return;
   }
   const sent = await channel.send(msg);
   logger.info("Дело опубликовано в дела-ск", { caseNumber: job.caseNumber, status: job.status, messageId: sent.id });
-  await postAction(
+  await acknowledge(
     { type: "case_published", queueId: job.id, messageId: sent.id, caseNumber: job.caseNumber, status: job.status },
-    {}, config, logger,
+    config, logger,
   );
 }
 
@@ -106,19 +117,19 @@ async function publishRoster(client, job, rosterMessageIds, config, logger) {
     }
   }
   logger.info("Состав опубликован в состав-ск", { messages: newIds.length });
-  await postAction({ type: "roster_published", queueId: job.id, messageIds: newIds }, {}, config, logger);
+  await acknowledge({ type: "roster_published", queueId: job.id, messageIds: newIds }, config, logger);
 }
 
 async function publishReport(client, job, config, logger) {
   if (!CHANNELS.report) {
     logger.warn("Канал отчёта не задан (REPORT_CHANNEL_ID) — отчёт пропущен");
-    await postAction({ type: "report_published", queueId: job.id, messageId: "" }, {}, config, logger);
+    await acknowledge({ type: "report_published", queueId: job.id, messageId: "" }, config, logger);
     return;
   }
   const channel = await client.channels.fetch(CHANNELS.report);
   const sent = await channel.send(buildReportMessage(job));
   logger.info("Еженедельный отчёт опубликован", { messageId: sent.id, period: job.period });
-  await postAction({ type: "report_published", queueId: job.id, messageId: sent.id }, {}, config, logger);
+  await acknowledge({ type: "report_published", queueId: job.id, messageId: sent.id }, config, logger);
 }
 
 async function publishPgSkOReport(client, job, config, logger) {
@@ -126,9 +137,9 @@ async function publishPgSkOReport(client, job, config, logger) {
     logger.warn("Канал ПГСкО-отчётов не задан (PGSKO_REPORT_CHANNEL_ID) — публикация пропущена", {
       reportId: job.reportId,
     });
-    await postAction(
+    await acknowledge(
       { type: "pgsko_published", queueId: job.id, reportId: job.reportId || "", messageId: "", messageUrl: "" },
-      {}, config, logger,
+      config, logger,
     );
     return;
   }
@@ -136,7 +147,7 @@ async function publishPgSkOReport(client, job, config, logger) {
   const sent = await channel.send(buildPgSkOMessage(job));
   const messageUrl = `https://discord.com/channels/${sent.guildId}/${sent.channelId}/${sent.id}`;
   logger.info("Отчёт ПГСкО опубликован", { reportId: job.reportId, messageId: sent.id });
-  await postAction(
+  await acknowledge(
     {
       type: "pgsko_published",
       queueId: job.id,
@@ -144,29 +155,29 @@ async function publishPgSkOReport(client, job, config, logger) {
       messageId: sent.id,
       messageUrl,
     },
-    {}, config, logger,
+    config, logger,
   );
 }
 
 async function publishActReview(client, job, config, logger) {
   if (!CHANNELS.actReview) {
     logger.warn("Канал «акты-и-делоодобрение» не задан (ACT_REVIEW_CHANNEL_ID) — пропуск", { actId: job.actId });
-    await postAction({ type: "act_review_published", queueId: job.id, actId: job.actId || "", messageId: "" }, {}, config, logger);
+    await acknowledge({ type: "act_review_published", queueId: job.id, actId: job.actId || "", messageId: "" }, config, logger);
     return;
   }
   const channel = await client.channels.fetch(CHANNELS.actReview);
   const sent = await channel.send(buildActReviewMessage(job));
   logger.info("Акт отправлен на рассмотрение в акты-и-делоодобрение", { actId: job.actId, caseNumber: job.caseNumber, messageId: sent.id });
-  await postAction(
+  await acknowledge(
     { type: "act_review_published", queueId: job.id, actId: job.actId || "", messageId: sent.id },
-    {}, config, logger,
+    config, logger,
   );
 }
 
 // Решение по акту принято на сайте → редактируем карточку в «акты-и-делоодобрение».
 async function editActDecision(client, job, config, logger) {
   if (!CHANNELS.actReview || !job.messageId) {
-    await postAction({ type: "act_decided_done", queueId: job.id, actId: job.actId || "" }, {}, config, logger);
+    await acknowledge({ type: "act_decided_done", queueId: job.id, actId: job.actId || "" }, config, logger);
     return;
   }
   try {
@@ -179,7 +190,7 @@ async function editActDecision(client, job, config, logger) {
   } catch (error) {
     logger.error("Не удалось обновить карточку акта", { error: error.message, actId: job.actId });
   }
-  await postAction({ type: "act_decided_done", queueId: job.id, actId: job.actId || "" }, {}, config, logger);
+  await acknowledge({ type: "act_decided_done", queueId: job.id, actId: job.actId || "" }, config, logger);
 }
 
 // Обработчик реакции ✅ в «дела-ск» → архивация дела (вызывается из index.js).
@@ -196,7 +207,7 @@ export async function handleArchiveReaction(reaction, user, config, logger) {
       if (!member || !member.roles.cache.has(PROSECUTOR_ROLE_ID)) return; // ✅ не от прокуратуры
     }
     logger.info("Реакция ✅ на деле — архивирую", { messageId: message.id });
-    await postAction({ type: "archive_case_by_message", messageId: message.id }, {}, config, logger);
+    await acknowledge({ type: "archive_case_by_message", messageId: message.id }, config, logger);
   } catch (error) {
     logger.error("Ошибка обработки реакции архивации", { error: error.message });
   }
@@ -219,14 +230,14 @@ export async function handlePgSkOReaction(reaction, user, config, logger) {
       messageId: message.id,
       approvedBy: member?.displayName || user.username,
     });
-    await postAction(
+    await acknowledge(
       {
         type: "approve_pgsko_by_message",
         messageId: message.id,
         approvedById: user.id,
         approvedByName: member?.displayName || user.username,
       },
-      {}, config, logger,
+      config, logger,
     );
   } catch (error) {
     logger.error("Ошибка обработки реакции ПГСкО", { error: error.message });
