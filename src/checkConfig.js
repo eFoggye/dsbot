@@ -12,6 +12,7 @@ try {
   console.log(`Storage: ${config.storage}`);
   console.log(`SQL enabled: ${config.useSql ? "yes" : "no"}`);
   console.log(`Webhook enabled: ${config.useWebhook ? "yes" : "no"}`);
+  console.log(`Guild members intent: ${config.enableGuildMembersIntent ? "yes" : "no"}`);
   console.log(`Ignore bot messages: ${config.ignoreBots ? "yes" : "no"}`);
 } catch (error) {
   console.error(`Configuration error: ${error.message}`);

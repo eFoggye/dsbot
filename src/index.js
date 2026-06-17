@@ -13,16 +13,19 @@ import { startPublisher, handleArchiveReaction, handlePgSkOReaction } from "./pu
 const config = loadConfig({ requireRuntime: true });
 const logger = createLogger(config.logLevel);
 
+const intents = [
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.MessageContent,
+  GatewayIntentBits.GuildMessageReactions,
+];
+
+if (config.enableGuildMembersIntent) {
+  intents.push(GatewayIntentBits.GuildMembers);
+}
+
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMessageReactions,
-    // PRIVILEGED: нужен для резолва ников в @плашки при публикации состава.
-    // Включить в Developer Portal → Bot → Server Members Intent.
-    GatewayIntentBits.GuildMembers,
-  ],
+  intents,
   // partials нужны, чтобы ловить реакции и на сообщения, которых нет в кеше (старые).
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
@@ -36,6 +39,7 @@ client.once(Events.ClientReady, (readyClient) => {
     webhookEnabled: Boolean(config.webhookUrl),
     sqlEnabled: config.useSql,
     storage: config.storage,
+    guildMembersIntent: config.enableGuildMembersIntent,
     ignoreBots: config.ignoreBots,
   });
   // Реверс-публикации (таблица → Discord): опрос очереди заданий.

@@ -83,6 +83,7 @@ export function loadConfig({ requireRuntime = true } = {}) {
     ocrApiKey: (process.env.OCR_API_KEY || process.env.ANTHROPIC_API_KEY)?.trim() ?? "",
     ocrBaseUrl: process.env.OCR_BASE_URL?.trim() || "https://api.aitunnel.ru/v1",
     ocrModel: process.env.OCR_MODEL?.trim() || "claude-haiku-4.5",
+    enableGuildMembersIntent: readBoolean(process.env.DISCORD_ENABLE_GUILD_MEMBERS, false),
     ignoreBots: readBoolean(process.env.IGNORE_BOTS, true),
     logLevel: process.env.LOG_LEVEL?.trim() || "info",
     httpTimeoutMs: readInteger(process.env.HTTP_TIMEOUT_MS, 7000),
