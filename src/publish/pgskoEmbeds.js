@@ -60,8 +60,11 @@ export function buildPgSkOMessage(job) {
     timestamp: job.submittedAt ? new Date(job.submittedAt).toISOString() : new Date().toISOString(),
   };
 
+  // Скриншот-доказательство показываем маленькой миниатюрой справа (thumbnail),
+  // а не большой картинкой внизу. Если доказательство — не картинка (внешняя
+  // ссылка или пусто), в thumbnail остаётся герб, заданный выше.
   const image = imageUrl(proofUrl);
-  if (image) embed.image = { url: image };
+  if (image) embed.thumbnail = { url: image };
   if (job.comment) {
     embed.fields.push({ name: "Комментарий", value: valueOrDash(job.comment).slice(0, 1024), inline: false });
   }
