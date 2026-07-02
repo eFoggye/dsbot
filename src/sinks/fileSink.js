@@ -70,23 +70,42 @@ async function ensureCsvHeader(filePath) {
   try {
     await fs.access(filePath);
   } catch {
-    await fs.appendFile(filePath, `${csvHeaders.join(",")}\n`, "utf8");
+    await appendPrivate(filePath, `${csvHeaders.join(",")}\n`);
   }
 }
 
-export async function saveMessageToFiles(event, { outputDir }) {
-  await fs.mkdir(outputDir, { recursive: true });
+async function appendPrivate(filePath, text) {
+  const handle = await fs.open(filePath, "a", 0o600);
+  try {
+    await handle.appendFile(text, "utf8");
+    await handle.chmod(0o600).catch(() => {});
+  } finally {
+    await handle.close();
+  }
+}
+
+function safeEventForLog(event, logRawMessages) {
+  if (logRawMessages) return event;
+  const { rawSnapshot, ...rest } = event;
+  return rest;
+}
+
+export async function saveMessageToFiles(event, { outputDir, logRawMessages = false }) {
+  await fs.mkdir(outputDir, { recursive: true, mode: 0o700 });
+  await fs.chmod(outputDir, 0o700).catch(() => {});
 
   const jsonlPath = path.join(outputDir, "messages.ndjson");
   const csvPath = path.join(outputDir, "messages.csv");
   const actionJsonlPath = path.join(outputDir, "sheet-actions.ndjson");
   const rawJsonlPath = path.join(outputDir, "raw-messages.ndjson");
 
-  await fs.appendFile(jsonlPath, `${JSON.stringify(event)}\n`, "utf8");
-  await fs.appendFile(rawJsonlPath, `${JSON.stringify(event.rawSnapshot ?? {})}\n`, "utf8");
+  await appendPrivate(jsonlPath, `${JSON.stringify(safeEventForLog(event, logRawMessages))}\n`);
+  if (logRawMessages) {
+    await appendPrivate(rawJsonlPath, `${JSON.stringify(event.rawSnapshot ?? {})}\n`);
+  }
   await ensureCsvHeader(csvPath);
-  await fs.appendFile(csvPath, `${toCsvRow(event)}\n`, "utf8");
-  await fs.appendFile(
+  await appendPrivate(csvPath, `${toCsvRow(event)}\n`);
+  await appendPrivate(
     actionJsonlPath,
     `${JSON.stringify({
       receivedAt: event.receivedAt,
@@ -97,7 +116,6 @@ export async function saveMessageToFiles(event, { outputDir }) {
       messageUrl: event.messageUrl,
       action: event.sheetAction,
     })}\n`,
-    "utf8",
   );
 
   return { jsonlPath, csvPath, actionJsonlPath, rawJsonlPath };

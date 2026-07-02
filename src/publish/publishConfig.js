@@ -68,7 +68,7 @@ export const ARCHIVE_EMOJI = "✅";
 export const ARCHIVE_REQUIRE_PROSECUTOR = Boolean(PROSECUTOR_ROLE_ID);
 
 // Подтверждение ПГСкО по реакции ✅ в канале отчётов.
-// Если PGSKO_APPROVER_ROLE_ID пустой — засчитывается любая не-ботская галочка.
+// Без PGSKO_APPROVER_ROLE_ID реакции игнорируются: зачёт должен быть fail-closed.
 export const PGSKO_APPROVE_EMOJI = "✅";
 export const PGSKO_APPROVER_ROLE_ID = process.env.PGSKO_APPROVER_ROLE_ID?.trim() || "";
 

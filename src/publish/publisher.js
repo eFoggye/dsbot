@@ -4,8 +4,7 @@
  * Плюс архивация дела по реакции ✅ от прокуратуры.
  */
 
-import { fetchPublishQueue, postAction } from "../sinks/httpSink.js";
-import { fetchPublishQueueFromSql, postActionToSql } from "../sinks/sqlSink.js";
+import { fetchPublishQueueFromApi, postActionToApi } from "../sinks/botApiSink.js";
 import { buildCaseMessage } from "./caseEmbeds.js";
 import { buildPgSkOMessage } from "./pgskoEmbeds.js";
 import { buildRosterMessages } from "./rosterContent.js";
@@ -24,8 +23,8 @@ import {
 const POLL_INTERVAL_MS = 15000;
 
 export function startPublisher(client, config, logger) {
-  if (!config.useWebhook && !config.useSql) {
-    logger.info("Публикатор выключен: не задан OUTPUT_WEBHOOK_URL или DATABASE_URL");
+  if (!config.useApi) {
+    logger.info("Публикатор выключен: не заданы BOT_API_URL/BOT_API_SECRET");
     return;
   }
   logger.info("Публикатор запущен (polling очереди)", { intervalMs: POLL_INTERVAL_MS, storage: config.storage });
@@ -65,13 +64,11 @@ async function pollOnce(client, config, logger) {
 }
 
 async function fetchQueue(config, logger) {
-  if (config.useSql) return fetchPublishQueueFromSql(config, logger);
-  return fetchPublishQueue(config, logger);
+  return fetchPublishQueueFromApi(config, logger);
 }
 
 async function acknowledge(action, config, logger) {
-  if (config.useSql) return postActionToSql(action, {}, config, logger);
-  return postAction(action, {}, config, logger);
+  return postActionToApi(action, {}, config, logger);
 }
 
 async function publishCase(client, job, config, logger) {
@@ -240,7 +237,11 @@ export async function handlePgSkOReaction(reaction, user, config, logger) {
     if (reaction.emoji.name !== PGSKO_APPROVE_EMOJI) return;
 
     const member = await message.guild.members.fetch(user.id).catch(() => null);
-    if (PGSKO_APPROVER_ROLE_ID && (!member || !member.roles.cache.has(PGSKO_APPROVER_ROLE_ID))) return;
+    if (!PGSKO_APPROVER_ROLE_ID) {
+      logger.warn("Реакция ПГСкО проигнорирована: не задан PGSKO_APPROVER_ROLE_ID", { messageId: message.id });
+      return;
+    }
+    if (!member || !member.roles.cache.has(PGSKO_APPROVER_ROLE_ID)) return;
 
     logger.info("Реакция ✅ на отчёте ПГСкО — засчитываю", {
       messageId: message.id,

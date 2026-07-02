@@ -5,8 +5,7 @@ import { getChannelRule } from "./channelRules.js";
 import { createLogger } from "./logger.js";
 import { normalizeMessage } from "./messageNormalizer.js";
 import { saveMessageToFiles } from "./sinks/fileSink.js";
-import { postMessageEvent, postAction } from "./sinks/httpSink.js";
-import { postMessageEventToSql, postActionToSql } from "./sinks/sqlSink.js";
+import { postMessageEventToApi, postActionToApi } from "./sinks/botApiSink.js";
 import { recognizeOrder, orderActionsToSheetActions } from "./ocr/orderOcr.js";
 import { startPublisher, handleArchiveReaction, handlePgSkOReaction } from "./publish/publisher.js";
 
@@ -36,8 +35,7 @@ client.once(Events.ClientReady, (readyClient) => {
     botUserId: readyClient.user.id,
     channels: Array.from(config.channelIds),
     outputDir: config.outputDir,
-    webhookEnabled: Boolean(config.webhookUrl),
-    sqlEnabled: config.useSql,
+    apiEnabled: config.useApi,
     storage: config.storage,
     guildMembersIntent: config.enableGuildMembersIntent,
     ignoreBots: config.ignoreBots,
@@ -74,13 +72,11 @@ async function processMessage(message, source) {
 }
 
 async function deliverMessageEvent(event) {
-  if (config.useWebhook) await postMessageEvent(event, config, logger);
-  if (config.useSql) await postMessageEventToSql(event, config, logger);
+  if (config.useApi) await postMessageEventToApi(event, config, logger);
 }
 
 async function deliverAction(action, meta) {
-  if (config.useWebhook) await postAction(action, meta, config, logger);
-  if (config.useSql) await postActionToSql(action, meta, config, logger);
+  if (config.useApi) await postActionToApi(action, meta, config, logger);
 }
 
 async function processOrderOcr(event) {

@@ -17,7 +17,7 @@ import { createLogger } from "./logger.js";
 import { channelRules } from "./channelRules.js";
 import { normalizeMessage } from "./messageNormalizer.js";
 import { saveMessageToFiles } from "./sinks/fileSink.js";
-import { postMessageEvent } from "./sinks/httpSink.js";
+import { postMessageEventToApi } from "./sinks/botApiSink.js";
 
 const config = loadConfig({ requireRuntime: true });
 const logger = createLogger(config.logLevel);
@@ -60,7 +60,7 @@ client.once(Events.ClientReady, async (readyClient) => {
         if (message.author?.id === readyClient.user.id) continue;
         const event = normalizeMessage(message);
         await saveMessageToFiles(event, config);
-        await postMessageEvent(event, config, logger);
+        await postMessageEventToApi(event, config, logger);
         total += 1;
         logger.info("Backfilled", {
           channel: event.channel.name,

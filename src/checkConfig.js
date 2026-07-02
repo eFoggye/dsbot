@@ -10,8 +10,8 @@ try {
   console.log(`Configured channels: ${config.channelIds.size}`);
   console.log(`Output directory: ${config.outputDir}`);
   console.log(`Storage: ${config.storage}`);
-  console.log(`SQL enabled: ${config.useSql ? "yes" : "no"}`);
-  console.log(`Webhook enabled: ${config.useWebhook ? "yes" : "no"}`);
+  console.log(`API enabled: ${config.useApi ? "yes" : "no"}`);
+  console.log(`Bot API URL: ${config.botApiUrl || "(не задан)"}`);
   console.log(`Guild members intent: ${config.enableGuildMembersIntent ? "yes" : "no"}`);
   console.log(`Ignore bot messages: ${config.ignoreBots ? "yes" : "no"}`);
 } catch (error) {
