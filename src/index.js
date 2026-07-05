@@ -71,6 +71,13 @@ async function processMessage(message, source) {
   }
 }
 
+// Канал состава пишет прямо в таблицу сотрудников, поэтому для него можно задать
+// allowlist авторов (STAFF_ALLOWED_AUTHOR_IDS). Пусто = полагаемся на права канала.
+function staffAuthorAllowed(message) {
+  if (config.staffAllowedAuthorIds.size === 0) return true;
+  return config.staffAllowedAuthorIds.has(message.author?.id ?? "");
+}
+
 async function deliverMessageEvent(event) {
   if (config.useApi) await postMessageEventToApi(event, config, logger);
 }
@@ -115,6 +122,14 @@ client.on(Events.MessageCreate, async (message) => {
   const rule = getChannelRule(message.channelId);
   if (rule.trigger === "reaction") return;
 
+  if (rule.key === "staff" && !staffAuthorAllowed(message)) {
+    logger.warn("Сообщение состава от автора вне allowlist — пропуск", {
+      messageId: message.id,
+      authorId: message.author?.id,
+    });
+    return;
+  }
+
   await processMessage(message, "create");
 });
 
@@ -142,6 +157,20 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
 
     if (config.ignoreBots && message.author?.bot) return;
 
+    // Одобрение реакцией — только от носителя роли (fail-closed):
+    // без approverRoleId реакции в таком канале игнорируются, чтобы любой
+    // участник не мог «одобрить» рапорт своим ✅.
+    if (!rule.approverRoleId) {
+      logger.warn("Реакция проигнорирована: не задана роль одобряющего (VACATION_APPROVER_ROLE_ID)", {
+        channelId: message.channelId,
+        messageId: message.id,
+        userId: user.id,
+      });
+      return;
+    }
+    const approver = await message.guild?.members.fetch(user.id).catch(() => null);
+    if (!approver || !approver.roles.cache.has(rule.approverRoleId)) return;
+
     await processMessage(message, `reaction:${emojiName}`);
   } catch (error) {
     logger.error("Failed to process reaction", { error: error.message });
@@ -158,6 +187,14 @@ client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
 
     const rule = getChannelRule(message.channelId);
     if (rule.key !== "staff") return; // правки обрабатываем только для состава
+
+    if (!staffAuthorAllowed(message)) {
+      logger.warn("Правка состава от автора вне allowlist — пропуск", {
+        messageId: message.id,
+        authorId: message.author?.id,
+      });
+      return;
+    }
 
     await processMessage(message, "update");
   } catch (error) {

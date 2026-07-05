@@ -29,7 +29,7 @@ function validateHttpUrl(value) {
   }
 }
 
-export function parseChannelIds(rawValue) {
+function parseIdSet(rawValue, label) {
   if (!rawValue) {
     return new Set();
   }
@@ -41,10 +41,14 @@ export function parseChannelIds(rawValue) {
 
   const invalidIds = ids.filter((id) => !/^\d+$/.test(id));
   if (invalidIds.length > 0) {
-    throw new Error(`Invalid Discord channel id(s): ${invalidIds.join(", ")}`);
+    throw new Error(`Invalid Discord id(s) in ${label}: ${invalidIds.join(", ")}`);
   }
 
   return new Set(ids);
+}
+
+export function parseChannelIds(rawValue) {
+  return parseIdSet(rawValue, "DISCORD_CHANNEL_IDS");
 }
 
 export function loadConfig({ requireRuntime = true } = {}) {
@@ -83,6 +87,9 @@ export function loadConfig({ requireRuntime = true } = {}) {
     ocrApiKey: (process.env.OCR_API_KEY || process.env.ANTHROPIC_API_KEY)?.trim() ?? "",
     ocrBaseUrl: process.env.OCR_BASE_URL?.trim() || "https://api.aitunnel.ru/v1",
     ocrModel: process.env.OCR_MODEL?.trim() || "claude-haiku-4.5",
+    // Allowlist авторов для канала состава: если задан, сообщения/правки состава
+    // принимаются только от этих Discord ID. Пусто = полагаемся на права канала.
+    staffAllowedAuthorIds: parseIdSet(process.env.STAFF_ALLOWED_AUTHOR_IDS, "STAFF_ALLOWED_AUTHOR_IDS"),
     enableGuildMembersIntent: readBoolean(process.env.DISCORD_ENABLE_GUILD_MEMBERS, false),
     ignoreBots: readBoolean(process.env.IGNORE_BOTS, true),
     logRawMessages: readBoolean(process.env.LOG_RAW_MESSAGES, false),

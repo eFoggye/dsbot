@@ -38,6 +38,9 @@ export const channelRules = {
     description: "Рапорта на отпуск. Уходят в таблицу только после одобрения реакцией ✅.",
     trigger: "reaction",
     approveEmoji: "✅",
+    // Одобрять реакцией может только носитель этой роли (руководство).
+    // Fail-closed: если VACATION_APPROVER_ROLE_ID не задан — реакции игнорируются.
+    approverRoleId: process.env.VACATION_APPROVER_ROLE_ID?.trim() || "",
   },
   "1297990569049456640": {
     key: "internal_orders",

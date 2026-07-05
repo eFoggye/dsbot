@@ -13,6 +13,22 @@
 const DEFAULT_BASE_URL = "https://api.aitunnel.ru/v1";
 const DEFAULT_MODEL = "claude-haiku-4.5";
 
+// Картинки качаем ТОЛЬКО с CDN Discord (URL приходит из attachment.url) — защита
+// от SSRF, если в imageUrls когда-нибудь попадёт произвольная ссылка из текста.
+const ALLOWED_IMAGE_HOSTS = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 МБ — с запасом для скана приказа
+
+function assertSafeImageUrl(rawUrl) {
+  const url = new URL(rawUrl);
+  if (url.protocol !== "https:") {
+    throw new Error(`OCR: недопустимый протокол картинки: ${url.protocol}`);
+  }
+  if (!ALLOWED_IMAGE_HOSTS.has(url.hostname)) {
+    throw new Error(`OCR: недопустимый хост картинки: ${url.hostname}`);
+  }
+  return url;
+}
+
 const SYSTEM_PROMPT = [
   "Ты обрабатываешь изображение документа Главного следственного управления СК России по АФО.",
   "Определи, является ли это КАДРОВЫМ ПРИКАЗОМ (заголовок «ПРИКАЗ» + «О кадровых пересмотрах»).",
@@ -29,17 +45,77 @@ const SYSTEM_PROMPT = [
 ].join("\n");
 
 async function fetchImageBase64(url, timeoutMs) {
+  const safeUrl = assertSafeImageUrl(url);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(safeUrl, { signal: controller.signal, redirect: "error" });
     if (!response.ok) throw new Error(`image HTTP ${response.status}`);
-    const contentType = (response.headers.get("content-type") || "image/png").split(";")[0];
+
+    const contentType = (response.headers.get("content-type") || "image/png").split(";")[0].trim();
+    if (!contentType.startsWith("image/")) {
+      throw new Error(`OCR: вложение не картинка (content-type: ${contentType})`);
+    }
+    const declaredLength = Number(response.headers.get("content-length") || 0);
+    if (declaredLength > MAX_IMAGE_BYTES) {
+      throw new Error(`OCR: картинка слишком большая (${declaredLength} байт)`);
+    }
+
     const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.byteLength > MAX_IMAGE_BYTES) {
+      throw new Error(`OCR: картинка слишком большая (${buffer.byteLength} байт)`);
+    }
     return { base64: buffer.toString("base64"), mediaType: contentType };
   } finally {
     clearTimeout(timeout);
   }
+}
+
+// --- Валидация ответа модели -------------------------------------------------
+// Модель читает картинку, которую мог прислать кто угодно с доступом к каналу.
+// Через текст на картинке её можно попытаться «уговорить» (prompt injection)
+// вернуть мусорные или вредные действия. Поэтому её выход НЕ доверенный:
+// прогоняем через жёсткие whitelist'ы и отбрасываем всё, что не по форме.
+
+const ALLOWED_KINDS = new Set(["назначение", "присвоение_звания", "увольнение"]);
+const ALLOWED_RANKS = new Set([
+  "Младший лейтенант", "Лейтенант", "Старший лейтенант", "Капитан", "Майор",
+  "Подполковник", "Полковник", "Генерал-майор", "Генерал-лейтенант", "Генерал-полковник",
+]);
+const ALLOWED_DEPARTMENTS = new Set([
+  "Аппарат руководителя ГСУ СК России",
+  "Следственный отдел (СО)",
+  "Отдел профессиональной подготовки (ОПП)",
+]);
+// ФИО: 2–3 слова кириллицей с заглавной, допускаем дефисные фамилии.
+const FIO_PATTERN = /^[А-ЯЁ][а-яё]+(?:-[А-ЯЁа-яё][а-яё]+)?(?:\s+[А-ЯЁ][а-яё]+(?:-[А-ЯЁа-яё][а-яё]+)?){1,2}$/u;
+// Должность: только буквы, пробелы, дефисы и скобки — без ссылок/управляющих символов.
+const POSITION_PATTERN = /^[А-ЯЁа-яёA-Za-z\s()-]*$/u;
+const MAX_ACTIONS = 20;
+
+export function sanitizeOrderActions(actions) {
+  const out = [];
+  for (const raw of Array.isArray(actions) ? actions.slice(0, MAX_ACTIONS) : []) {
+    const kind = String(raw?.kind || "").trim();
+    if (!ALLOWED_KINDS.has(kind)) continue;
+
+    const fio = String(raw?.fio || "").replace(/\s+/g, " ").trim();
+    if (fio.length > 80 || !FIO_PATTERN.test(fio)) continue;
+
+    const rank = String(raw?.rank || "").trim();
+    const department = String(raw?.department || "").trim();
+    const position = String(raw?.position || "").replace(/\s+/g, " ").trim().slice(0, 80);
+
+    out.push({
+      kind,
+      fio,
+      rank: ALLOWED_RANKS.has(rank) ? rank : "",
+      department: ALLOWED_DEPARTMENTS.has(department) ? department : "",
+      position: POSITION_PATTERN.test(position) ? position : "",
+      status: "",
+    });
+  }
+  return out;
 }
 
 // Снимает ```json ... ``` обёртку, если модель её добавила, и парсит JSON.
@@ -92,7 +168,8 @@ export async function recognizeOrder(imageUrl, { apiKey, model, baseUrl, httpTim
     const content = data?.choices?.[0]?.message?.content;
     if (!content) return { isOrder: false, actions: [] };
     const parsed = parseJsonLoose(content);
-    return { isOrder: Boolean(parsed.is_order), actions: parsed.actions || [] };
+    // Выход модели — недоверенный: фильтруем через whitelist'ы (см. sanitizeOrderActions).
+    return { isOrder: Boolean(parsed.is_order), actions: sanitizeOrderActions(parsed.actions) };
   } finally {
     clearTimeout(timeout);
   }

@@ -44,9 +44,13 @@ async function callBotApi(config, body) {
 }
 
 // Сырое сообщение Discord + распознанное действие (если есть) — на сервер одним запросом.
+// rawSnapshot (полный слепок: роли, участники, аватарки) на сервер НЕ шлём — он там
+// не используется, а лишние персональные данные в БД ни к чему. Локально слепок
+// пишется только при LOG_RAW_MESSAGES=true (см. fileSink).
 export async function postMessageEventToApi(event, config, logger) {
   try {
-    await callBotApi(config, { op: "message_event", event });
+    const { rawSnapshot, ...payload } = event || {};
+    await callBotApi(config, { op: "message_event", event: payload });
   } catch (error) {
     logger.warn("API message delivery failed", { error: error.message, messageId: event.messageId });
   }
