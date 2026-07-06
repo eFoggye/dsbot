@@ -43,7 +43,9 @@ async function pollOnce(client, config, logger) {
       if (job.type === "case") {
         await publishCase(client, job, config, logger);
       } else if (job.type === "roster") {
-        await publishRoster(client, job, queue.rosterMessageIds || [], config, logger);
+        const idsByUnit = queue.rosterMessageIdsByUnit || {};
+        const rosterIds = idsByUnit[job.unit || ""] || (job.unit ? [] : (queue.rosterMessageIds || []));
+        await publishRoster(client, job, rosterIds, config, logger);
       } else if (job.type === "report") {
         await publishReport(client, job, config, logger);
       } else if (job.type === "pgsko_report") {
@@ -77,7 +79,7 @@ async function publishCase(client, job, config, logger) {
   if (!msg) {
     logger.warn("Статус дела не публикуется", { status: job.status, caseNumber: job.caseNumber });
     await acknowledge(
-      { type: "case_published", queueId: job.id, messageId: "", caseNumber: job.caseNumber, status: job.status },
+      { type: "case_published", queueId: job.id, unit: job.unit || "", messageId: "", caseNumber: job.caseNumber, status: job.status },
       config, logger,
     );
     return;
@@ -85,7 +87,7 @@ async function publishCase(client, job, config, logger) {
   const sent = await channel.send(msg);
   logger.info("Дело опубликовано в дела-ск", { caseNumber: job.caseNumber, status: job.status, messageId: sent.id });
   await acknowledge(
-    { type: "case_published", queueId: job.id, messageId: sent.id, caseNumber: job.caseNumber, status: job.status },
+    { type: "case_published", queueId: job.id, unit: job.unit || "", messageId: sent.id, caseNumber: job.caseNumber, status: job.status },
     config, logger,
   );
 }
@@ -117,7 +119,7 @@ async function publishRoster(client, job, rosterMessageIds, config, logger) {
     }
   }
   logger.info("Состав опубликован в состав-ск", { messages: newIds.length });
-  await acknowledge({ type: "roster_published", queueId: job.id, messageIds: newIds }, config, logger);
+  await acknowledge({ type: "roster_published", queueId: job.id, unit: job.unit || "", messageIds: newIds }, config, logger);
 }
 
 async function publishReport(client, job, config, logger) {
@@ -138,7 +140,7 @@ async function publishPgSkOReport(client, job, config, logger) {
       reportId: job.reportId,
     });
     await acknowledge(
-      { type: "pgsko_published", queueId: job.id, reportId: job.reportId || "", messageId: "", messageUrl: "" },
+      { type: "pgsko_published", queueId: job.id, unit: job.unit || "", reportId: job.reportId || "", messageId: "", messageUrl: "" },
       config, logger,
     );
     return;
@@ -151,6 +153,7 @@ async function publishPgSkOReport(client, job, config, logger) {
     {
       type: "pgsko_published",
       queueId: job.id,
+      unit: job.unit || "",
       reportId: job.reportId || "",
       messageId: sent.id,
       messageUrl,
@@ -162,14 +165,14 @@ async function publishPgSkOReport(client, job, config, logger) {
 async function publishActReview(client, job, config, logger) {
   if (!CHANNELS.actReview) {
     logger.warn("Канал «акты-и-делоодобрение» не задан (ACT_REVIEW_CHANNEL_ID) — пропуск", { actId: job.actId });
-    await acknowledge({ type: "act_review_published", queueId: job.id, actId: job.actId || "", messageId: "" }, config, logger);
+    await acknowledge({ type: "act_review_published", queueId: job.id, unit: job.unit || "", actId: job.actId || "", messageId: "" }, config, logger);
     return;
   }
   const channel = await client.channels.fetch(CHANNELS.actReview);
   const sent = await channel.send(buildActReviewMessage(job));
   logger.info("Акт отправлен на рассмотрение в акты-и-делоодобрение", { actId: job.actId, caseNumber: job.caseNumber, messageId: sent.id });
   await acknowledge(
-    { type: "act_review_published", queueId: job.id, actId: job.actId || "", messageId: sent.id },
+    { type: "act_review_published", queueId: job.id, unit: job.unit || "", actId: job.actId || "", messageId: sent.id },
     config, logger,
   );
 }
@@ -177,7 +180,7 @@ async function publishActReview(client, job, config, logger) {
 // Решение по акту принято на сайте → редактируем карточку в «акты-и-делоодобрение».
 async function editActDecision(client, job, config, logger) {
   if (!CHANNELS.actReview || !job.messageId) {
-    await acknowledge({ type: "act_decided_done", queueId: job.id, actId: job.actId || "" }, config, logger);
+    await acknowledge({ type: "act_decided_done", queueId: job.id, unit: job.unit || "", actId: job.actId || "" }, config, logger);
     return;
   }
   try {
@@ -190,20 +193,20 @@ async function editActDecision(client, job, config, logger) {
   } catch (error) {
     logger.error("Не удалось обновить карточку акта", { error: error.message, actId: job.actId });
   }
-  await acknowledge({ type: "act_decided_done", queueId: job.id, actId: job.actId || "" }, config, logger);
+  await acknowledge({ type: "act_decided_done", queueId: job.id, unit: job.unit || "", actId: job.actId || "" }, config, logger);
 }
 
 // Дисциплинарное взыскание выдано/снято на сайте → публикуем уведомление в канал взысканий.
 async function publishDiscipline(client, job, config, logger) {
   if (!CHANNELS.discipline) {
     logger.warn("Канал взысканий не задан (DISCIPLINE_CHANNEL_ID) — пропуск", { recordId: job.recordId });
-    await acknowledge({ type: "discipline_published", queueId: job.id }, config, logger);
+    await acknowledge({ type: "discipline_published", queueId: job.id, unit: job.unit || "" }, config, logger);
     return;
   }
   const channel = await client.channels.fetch(CHANNELS.discipline);
   const sent = await channel.send(buildDisciplineMessage(job));
   logger.info("Взыскание опубликовано", { recordId: job.recordId, action: job.action, type: job.type, messageId: sent.id });
-  await acknowledge({ type: "discipline_published", queueId: job.id, messageId: sent.id }, config, logger);
+  await acknowledge({ type: "discipline_published", queueId: job.id, unit: job.unit || "", messageId: sent.id }, config, logger);
 }
 
 // Обработчик реакции ✅ в «дела-ск» → архивация дела (вызывается из index.js).
