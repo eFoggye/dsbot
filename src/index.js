@@ -5,7 +5,7 @@ import { getChannelRule } from "./channelRules.js";
 import { createLogger } from "./logger.js";
 import { normalizeMessage } from "./messageNormalizer.js";
 import { saveMessageToFiles } from "./sinks/fileSink.js";
-import { postMessageEventToApi, postActionToApi } from "./sinks/botApiSink.js";
+import { postMessageEventToApi, postActionToApi, startApiRetryLoop } from "./sinks/botApiSink.js";
 import { recognizeOrder, orderActionsToSheetActions } from "./ocr/orderOcr.js";
 import { startPublisher, handleArchiveReaction, handlePgSkOReaction } from "./publish/publisher.js";
 
@@ -42,7 +42,21 @@ client.once(Events.ClientReady, (readyClient) => {
   });
   // Реверс-публикации (таблица → Discord): опрос очереди заданий.
   startPublisher(readyClient, config, logger);
+  // Досылка событий, не доехавших до API (retry-queue.ndjson).
+  startApiRetryLoop(config, logger);
 });
+
+// Все обрабатываемые сообщения учитываем, чтобы при SIGTERM дождаться их
+// завершения (graceful drain) и не потерять полузаписанные события.
+let shuttingDown = false;
+const inFlight = new Set();
+
+function processMessageTracked(message, source) {
+  const task = processMessage(message, source);
+  inFlight.add(task);
+  task.finally(() => inFlight.delete(task));
+  return task;
+}
 
 async function processMessage(message, source) {
   try {
@@ -86,11 +100,17 @@ async function deliverAction(action, meta) {
   if (config.useApi) await postActionToApi(action, meta, config, logger);
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function processOrderOcr(event) {
   const imageUrls = event.sheetAction?.data?.imageUrls || [];
   const meta = { messageUrl: event.messageUrl, channel: event.channel };
 
+  let first = true;
   for (const url of imageUrls) {
+    // Пауза между OCR-запросами: не долбим API распознавания пачкой картинок разом.
+    if (!first) await sleep(1000);
+    first = false;
     try {
       const { isOrder, actions } = await recognizeOrder(url, {
         apiKey: config.ocrApiKey,
@@ -115,6 +135,7 @@ async function processOrderOcr(event) {
 
 // Новые сообщения. Каналы с trigger="reaction" здесь пропускаем — их ждём по реакции.
 client.on(Events.MessageCreate, async (message) => {
+  if (shuttingDown) return;
   if (!config.channelIds.has(message.channelId)) return;
   // Игнорируем только САМИХ СЕБЯ. Сообщения RMRP Forms (дела/статусы) — нужны.
   if (message.author?.id === client.user?.id) return;
@@ -130,12 +151,13 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
-  await processMessage(message, "create");
+  await processMessageTracked(message, "create");
 });
 
 // Реакции. Обрабатываем только каналы с trigger="reaction" и нужным эмодзи (✅).
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
   try {
+    if (shuttingDown) return;
     if (config.ignoreBots && user?.bot) return;
 
     // Реакция/сообщение могут быть partial (старое сообщение) — дотягиваем.
@@ -171,7 +193,7 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     const approver = await message.guild?.members.fetch(user.id).catch(() => null);
     if (!approver || !approver.roles.cache.has(rule.approverRoleId)) return;
 
-    await processMessage(message, `reaction:${emojiName}`);
+    await processMessageTracked(message, `reaction:${emojiName}`);
   } catch (error) {
     logger.error("Failed to process reaction", { error: error.message });
   }
@@ -181,6 +203,7 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
 // его правки тоже нужно ловить и переотправлять список (upsert).
 client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
   try {
+    if (shuttingDown) return;
     const message = newMessage.partial ? await newMessage.fetch() : newMessage;
     if (!config.channelIds.has(message.channelId)) return;
     if (message.author?.id === client.user?.id) return;
@@ -196,7 +219,7 @@ client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
       return;
     }
 
-    await processMessage(message, "update");
+    await processMessageTracked(message, "update");
   } catch (error) {
     logger.error("Failed to process update", { error: error.message });
   }
@@ -206,14 +229,34 @@ client.on(Events.Error, (error) => {
   logger.error("Discord client error", { error: error.message });
 });
 
-function shutdown(signal) {
-  logger.info("Shutting down", { signal });
-  client.destroy();
+// Graceful shutdown: отключаемся от Discord (новые события не приходят), затем
+// ждём завершения уже обрабатываемых сообщений (запись в файлы + доставка в API),
+// чтобы ничего не потерять. Максимум 10 секунд — потом выходим как есть
+// (недоставленное в API уже лежит в retry-очереди и доедет после рестарта).
+const SHUTDOWN_DRAIN_MS = 10_000;
+
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info("Shutting down", { signal, pendingMessages: inFlight.size });
+  try {
+    client.destroy();
+    await Promise.race([
+      Promise.allSettled(Array.from(inFlight)),
+      sleep(SHUTDOWN_DRAIN_MS),
+    ]);
+  } catch (error) {
+    logger.error("Ошибка при остановке", { error: error?.message ?? String(error) });
+  }
   process.exit(0);
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", (signal) => {
+  shutdown(signal);
+});
+process.on("SIGTERM", (signal) => {
+  shutdown(signal);
+});
 
 process.on("unhandledRejection", (error) => {
   logger.error("Unhandled rejection", { error: error?.message ?? String(error) });

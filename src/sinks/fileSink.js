@@ -74,6 +74,25 @@ async function ensureCsvHeader(filePath) {
   }
 }
 
+// Ротация по размеру: лог-файлы растут бесконечно (append-only), поэтому при
+// превышении лимита текущий файл переименовывается в <имя>-<дата>.<ext>,
+// а запись продолжается в свежий. CSV после ротации снова получит заголовок
+// (ensureCsvHeader вызывается после rotateIfNeeded).
+const MAX_LOG_BYTES = 100 * 1024 * 1024; // 100 МБ
+
+async function rotateIfNeeded(filePath) {
+  let size = 0;
+  try {
+    size = (await fs.stat(filePath)).size;
+  } catch {
+    return; // файла ещё нет — ротировать нечего
+  }
+  if (size < MAX_LOG_BYTES) return;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const { dir, name, ext } = path.parse(filePath);
+  await fs.rename(filePath, path.join(dir, `${name}-${stamp}${ext}`)).catch(() => {});
+}
+
 async function appendPrivate(filePath, text) {
   const handle = await fs.open(filePath, "a", 0o600);
   try {
@@ -99,12 +118,16 @@ export async function saveMessageToFiles(event, { outputDir, logRawMessages = fa
   const actionJsonlPath = path.join(outputDir, "sheet-actions.ndjson");
   const rawJsonlPath = path.join(outputDir, "raw-messages.ndjson");
 
+  await rotateIfNeeded(jsonlPath);
   await appendPrivate(jsonlPath, `${JSON.stringify(safeEventForLog(event, logRawMessages))}\n`);
   if (logRawMessages) {
+    await rotateIfNeeded(rawJsonlPath);
     await appendPrivate(rawJsonlPath, `${JSON.stringify(event.rawSnapshot ?? {})}\n`);
   }
+  await rotateIfNeeded(csvPath);
   await ensureCsvHeader(csvPath);
   await appendPrivate(csvPath, `${toCsvRow(event)}\n`);
+  await rotateIfNeeded(actionJsonlPath);
   await appendPrivate(
     actionJsonlPath,
     `${JSON.stringify({
