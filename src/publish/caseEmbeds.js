@@ -65,11 +65,19 @@ function title(status, caseNumber, fio) {
 
 export const PUBLISHABLE_STATUSES = Object.keys(BODIES);
 
+// Только http(s)-ссылки: валидный embed.url делает заголовок кликабельным,
+// а мусорную строку Discord отклонил бы (400) — поэтому фильтруем.
+function safeHttpUrl(u) {
+  const s = String(u || "").trim();
+  if (!/^https?:\/\//i.test(s)) return "";
+  try { new URL(s); return s; } catch { return ""; }
+}
+
 /**
  * Собирает сообщение для дела.
  * @returns { content, embeds, allowedMentions } для channel.send / message.edit
  */
-export function buildCaseMessage({ status, caseNumber, investigator }) {
+export function buildCaseMessage({ status, caseNumber, investigator, docUrl }) {
   const normalizedStatus = canonicalStatus(status);
   const body = BODIES[normalizedStatus];
   if (!body) return null;
@@ -85,6 +93,10 @@ export function buildCaseMessage({ status, caseNumber, investigator }) {
     footer: { text: EMBED_FOOTER, icon_url: COAT_OF_ARMS_URL },
     timestamp: new Date().toISOString(),
   };
+
+  // Ссылка на материалы дела → заголовок embed становится кликабельным (как в уведомлениях RMRP Forms).
+  const link = safeHttpUrl(docUrl);
+  if (link) embed.url = link;
 
   return {
     content: `Уведомление для ${roleMention}`,

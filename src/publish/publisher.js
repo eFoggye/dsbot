@@ -77,7 +77,7 @@ async function acknowledge(action, config, logger) {
 
 async function publishCase(client, job, config, logger) {
   const channel = await client.channels.fetch(CHANNELS.cases);
-  const msg = buildCaseMessage({ status: job.status, caseNumber: job.caseNumber, investigator: job.investigator });
+  const msg = buildCaseMessage({ status: job.status, caseNumber: job.caseNumber, investigator: job.investigator, docUrl: job.docUrl });
   if (!msg) {
     logger.warn("Статус дела не публикуется", { status: job.status, caseNumber: job.caseNumber });
     await acknowledge(
