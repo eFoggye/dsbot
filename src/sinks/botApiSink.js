@@ -20,9 +20,11 @@ import path from "node:path";
 const RETRY_QUEUE_FILE = "retry-queue.ndjson";
 const RETRY_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 1000; // 1с → 2с между попытками
-const RETRY_LOOP_INTERVAL_MS = 60_000;
+const RETRY_LOOP_INTERVAL_MS = 90_000;
 const MAX_QUEUE_ENTRIES = 500; // защита от бесконечного роста файла
 const MAX_QUEUE_AGE_MS = 24 * 60 * 60 * 1000; // старше суток — не досылаем
+const FLUSH_BATCH_LIMIT = 8;   // за один проход шлём не больше — чтобы не превысить rate-limit API
+const FLUSH_GAP_MS = 800;      // пауза между отправками внутри пачки
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -119,6 +121,8 @@ export async function flushApiRetryQueue(config, logger) {
     const keep = [];
     let sent = 0;
     let dropped = 0;
+    let budget = FLUSH_BATCH_LIMIT;
+    let stop = false; // API отвалился (напр. rate-limit) — прекращаем долбить в этом проходе
     for (const line of lines.slice(-MAX_QUEUE_ENTRIES)) {
       let entry;
       try {
@@ -131,11 +135,18 @@ export async function flushApiRetryQueue(config, logger) {
         dropped += 1;
         continue;
       }
+      if (stop || budget <= 0) { // лимит пачки исчерпан или API упал — остальное на следующий цикл
+        keep.push(line);
+        continue;
+      }
       try {
         await callBotApiOnce(config, entry.body);
         sent += 1;
+        budget -= 1;
+        if (budget > 0) await sleep(FLUSH_GAP_MS);
       } catch {
         keep.push(line);
+        stop = true; // первая же ошибка (обычно rate-limit) останавливает досылку — не усугубляем бан
       }
     }
 

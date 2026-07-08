@@ -20,7 +20,9 @@ import {
   PGSKO_APPROVER_ROLE_ID,
 } from "./publishConfig.js";
 
-const POLL_INTERVAL_MS = 15000;
+// 30 сек: публикация состава/дел не требует секундной реактивности, а редкий
+// опрос бережёт лимит API портала (бот с одного IP не должен долбить бэкенд).
+const POLL_INTERVAL_MS = 30000;
 
 export function startPublisher(client, config, logger) {
   if (!config.useApi) {

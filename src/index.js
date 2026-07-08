@@ -1,3 +1,4 @@
+import "./suppressWarnings.js"; // ДОЛЖЕН быть первым: гасит DEP0180 до загрузки discord.js
 import { Client, Events, GatewayIntentBits, Partials } from "discord.js";
 
 import { loadConfig } from "./config.js";
