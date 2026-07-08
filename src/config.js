@@ -83,6 +83,9 @@ export function loadConfig({ requireRuntime = true } = {}) {
     botApiSecret,
     storage: "api",
     useApi: Boolean(botApiUrl && botApiSecret),
+    // Управление этого бота (arbat/tverskoy/rublevka/patriki/kutuzovsky/ca). Сервер по нему
+    // отдаёт задания строго своего управления. Пусто = получать всё (как раньше).
+    botUnit: process.env.BOT_UNIT?.trim().toLowerCase() || "",
     // OCR через aitunnel (OpenAI-совместимый). OCR_API_KEY обязателен для включения OCR.
     ocrApiKey: (process.env.OCR_API_KEY || process.env.ANTHROPIC_API_KEY)?.trim() ?? "",
     ocrBaseUrl: process.env.OCR_BASE_URL?.trim() || "https://api.aitunnel.ru/v1",

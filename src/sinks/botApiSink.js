@@ -214,10 +214,11 @@ export async function postActionToApi(action, meta, config, logger) {
 }
 
 // Очередь заданий на публикацию в Discord: { ok, jobs, rosterMessageIds } либо null.
-// Без ретраев: это периодический опрос, publisher повторит его сам.
-export async function fetchPublishQueueFromApi(config, logger) {
+// unit — управление этого бота (env BOT_UNIT); сервер по нему отдаёт задания строго
+// своего управления. Без ретраев: это периодический опрос, publisher повторит сам.
+export async function fetchPublishQueueFromApi(config, logger, unit) {
   try {
-    return await callBotApi(config, { op: "queue" });
+    return await callBotApi(config, { op: "queue", unit: String(unit || "") });
   } catch (error) {
     logger.warn("Не удалось получить очередь публикаций (API)", { error: error.message });
     return null;

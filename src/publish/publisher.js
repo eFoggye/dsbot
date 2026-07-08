@@ -29,7 +29,9 @@ export function startPublisher(client, config, logger) {
     logger.info("Публикатор выключен: не заданы BOT_API_URL/BOT_API_SECRET");
     return;
   }
-  logger.info("Публикатор запущен (polling очереди)", { intervalMs: POLL_INTERVAL_MS, storage: config.storage });
+  // botUnit печатаем в лог: если пусто — бот получает задания всех управлений
+  // (совместимость); задан (arbat/tverskoy/…) — строго своё управление.
+  logger.info("Публикатор запущен (polling очереди)", { intervalMs: POLL_INTERVAL_MS, storage: config.storage, botUnit: config.botUnit || "(все — BOT_UNIT не задан)" });
   const tick = () => pollOnce(client, config, logger).catch((e) =>
     logger.error("Ошибка опроса очереди", { error: e.message }));
   setInterval(tick, POLL_INTERVAL_MS);
@@ -37,7 +39,8 @@ export function startPublisher(client, config, logger) {
 }
 
 async function pollOnce(client, config, logger) {
-  const queue = await fetchQueue(config, logger);
+  // Управление бота (env BOT_UNIT) → сервер отдаёт задания строго этого управления.
+  const queue = await fetchQueue(config, logger, config.botUnit);
   if (!queue || !Array.isArray(queue.jobs) || queue.jobs.length === 0) return;
 
   for (const job of queue.jobs) {
@@ -67,8 +70,8 @@ async function pollOnce(client, config, logger) {
   }
 }
 
-async function fetchQueue(config, logger) {
-  return fetchPublishQueueFromApi(config, logger);
+async function fetchQueue(config, logger, unit) {
+  return fetchPublishQueueFromApi(config, logger, unit);
 }
 
 async function acknowledge(action, config, logger) {
