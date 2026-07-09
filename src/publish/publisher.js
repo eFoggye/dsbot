@@ -29,9 +29,9 @@ export function startPublisher(client, config, logger) {
     logger.info("Публикатор выключен: не заданы BOT_API_URL/BOT_API_SECRET");
     return;
   }
-  // botUnit печатаем в лог: если пусто — бот получает задания всех управлений
-  // (совместимость); задан (arbat/tverskoy/…) — строго своё управление.
-  logger.info("Публикатор запущен (polling очереди)", { intervalMs: POLL_INTERVAL_MS, storage: config.storage, botUnit: config.botUnit || "(все — BOT_UNIT не задан)" });
+  // botUnit печатаем в лог. На бою BOT_UNIT обязателен, чтобы публиковать
+  // только задания своего управления.
+  logger.info("Публикатор запущен (polling очереди)", { intervalMs: POLL_INTERVAL_MS, storage: config.storage, botUnit: config.botUnit });
   const tick = () => pollOnce(client, config, logger).catch((e) =>
     logger.error("Ошибка опроса очереди", { error: e.message }));
   setInterval(tick, POLL_INTERVAL_MS);

@@ -3,6 +3,8 @@ import path from "node:path";
 
 import { defaultChannelIds } from "./channelRules.js";
 
+const VALID_BOT_UNITS = new Set(["arbat", "rublevka", "patriki", "tverskoy", "kutuzovsky", "ca"]);
+
 function readBoolean(value, fallback) {
   if (value === undefined || value === "") {
     return fallback;
@@ -59,6 +61,7 @@ export function loadConfig({ requireRuntime = true } = {}) {
   // Связь с сайтом — только по HTTP через /api/bot с токеном. Прямого доступа к БД у бота нет.
   const botApiUrl = validateHttpUrl(process.env.BOT_API_URL?.trim() ?? "");
   const botApiSecret = process.env.BOT_API_SECRET?.trim() ?? "";
+  const botUnit = process.env.BOT_UNIT?.trim().toLowerCase() || "";
 
   const errors = [];
   if (requireRuntime && !token) {
@@ -69,6 +72,12 @@ export function loadConfig({ requireRuntime = true } = {}) {
   }
   if (requireRuntime && !botApiSecret) {
     errors.push("BOT_API_SECRET is required (общий секрет с сайтом)");
+  }
+  if (requireRuntime && !botUnit) {
+    errors.push("BOT_UNIT is required (arbat/rublevka/patriki/tverskoy/kutuzovsky/ca)");
+  }
+  if (botUnit && !VALID_BOT_UNITS.has(botUnit)) {
+    errors.push(`Invalid BOT_UNIT: ${botUnit}`);
   }
 
   if (errors.length > 0) {
@@ -83,9 +92,9 @@ export function loadConfig({ requireRuntime = true } = {}) {
     botApiSecret,
     storage: "api",
     useApi: Boolean(botApiUrl && botApiSecret),
-    // Управление этого бота (arbat/tverskoy/rublevka/patriki/kutuzovsky/ca). Сервер по нему
-    // отдаёт задания строго своего управления. Пусто = получать всё (как раньше).
-    botUnit: process.env.BOT_UNIT?.trim().toLowerCase() || "",
+    // Управление этого бота. Обязательно на бою: без него события без номера дела
+    // нельзя безопасно привязать к нужному управлению.
+    botUnit,
     // OCR через aitunnel (OpenAI-совместимый). OCR_API_KEY обязателен для включения OCR.
     ocrApiKey: (process.env.OCR_API_KEY || process.env.ANTHROPIC_API_KEY)?.trim() ?? "",
     ocrBaseUrl: process.env.OCR_BASE_URL?.trim() || "https://api.aitunnel.ru/v1",

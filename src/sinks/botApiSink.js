@@ -186,7 +186,7 @@ export function startApiRetryLoop(config, logger) {
 // пишется только при LOG_RAW_MESSAGES=true (см. fileSink).
 export async function postMessageEventToApi(event, config, logger) {
   const { rawSnapshot, ...payload } = event || {};
-  const body = { op: "message_event", event: payload };
+  const body = { op: "message_event", event: { ...payload, botUnit: config.botUnit || "" } };
   try {
     await callBotApi(config, body, { attempts: RETRY_ATTEMPTS });
   } catch (error) {

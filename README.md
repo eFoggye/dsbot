@@ -60,6 +60,7 @@ npm start
 | `DISCORD_CHANNEL_IDS` | пусто на бою (слушает каналы из `channelRules.js`); список ID — для теста |
 | `BOT_API_URL` | endpoint сайта, обычно `https://sledak-rmrp.ru/api/bot` |
 | `BOT_API_SECRET` | общий секрет с Vercel-переменной портала; **обязателен** |
+| `BOT_UNIT` | управление этого экземпляра бота: `arbat`, `rublevka`, `patriki`, `tverskoy`, `kutuzovsky` или `ca`; **обязателен** |
 | `REPORT_CHANNEL_ID` | ID канала еженедельного отчёта |
 | `PGSKO_REPORT_CHANNEL_ID` | ID канала проверки отчётов ПГСкО |
 | `ACT_REVIEW_CHANNEL_ID` | ID канала «акты-и-делоодобрение» |
