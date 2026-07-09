@@ -1,5 +1,8 @@
 node_modules/
 .env
+.env.*
 logs/
 *.log
 .DS_Store
+_test-publish-all.mjs
+_test-results.json
