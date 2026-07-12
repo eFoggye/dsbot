@@ -36,7 +36,10 @@ function positionLabel(position) {
 }
 
 function rankBrackets(rank) {
-  const label = RANK_EMOJI[rank] || escapeMarkdown(rank || "—");
+  const normalized = String(rank || "")
+    .replace(/\s+юстиции\s*$/iu, "")
+    .trim();
+  const label = RANK_EMOJI[normalized] || escapeMarkdown(rank || "—");
   return `[ ${label} ]`;
 }
 
@@ -68,9 +71,20 @@ function personLine(guild, person, bullet = "") {
   const rank = rankBrackets(person.rank);
   const warnings = toNumber(person.warnings);
   const reprimands = toNumber(person.reprimands);
+  const joinedAt = person.joinedAt || person.joinDate;
+  const details = [
+    `Предупреждения: ${warnings}/3`,
+    `Выговоры: ${reprimands}/3`,
+    `Дата вступления: ${formatDate(joinedAt)}`,
+  ];
+  if (person.status === "Отпуск") {
+    const from = person.vacationFrom ? formatDate(person.vacationFrom) : "";
+    const until = person.vacationUntil ? formatDate(person.vacationUntil) : "";
+    details.push(from && until ? `Отпуск: ${from}–${until}` : (until ? `В отпуске до ${until}` : "В отпуске"));
+  }
   return [
     `${bullet}${positionLabel(person.position)} - ${resolveMention(guild, person.fio)}${rank ? ` ${rank}` : ""}`,
-    `Предупреждения: ${warnings}/3 | Выговоры: ${reprimands}/3 | Дата вступления: ${formatDate(person.joinedAt)}`,
+    details.join(" | "),
   ].join("\n");
 }
 
@@ -155,7 +169,7 @@ function buildEmbed(section, people, guild, index, total) {
  * @returns массив payload-объектов для channel.send / message.edit
  */
 export function buildRosterMessages(roster, guild) {
-  const active = (roster || []).filter((p) => p.fio && p.status === "Активен");
+  const active = (roster || []).filter((p) => p.fio && p.status !== "Уволен");
   return ROSTER_SECTIONS.map((section, index) => ({
     embeds: [buildEmbed(section, sectionPeople(active, section), guild, index, ROSTER_SECTIONS.length)],
     allowedMentions: { parse: [] },

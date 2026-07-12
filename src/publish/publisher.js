@@ -23,6 +23,28 @@ import {
 // 30 сек: публикация состава/дел не требует секундной реактивности, а редкий
 // опрос бережёт лимит API портала (бот с одного IP не должен долбить бэкенд).
 const POLL_INTERVAL_MS = 30000;
+const MEMBER_CACHE_TTL_MS = 10 * 60 * 1000;
+const memberFetchState = new Map();
+
+async function ensureGuildMembers(guild, logger) {
+  const current = memberFetchState.get(guild.id);
+  const now = Date.now();
+  if (current?.promise) return current.promise;
+  if (current?.loadedAt && now - current.loadedAt < MEMBER_CACHE_TTL_MS) return;
+
+  const promise = guild.members.fetch()
+    .then(() => {
+      memberFetchState.set(guild.id, { loadedAt: Date.now(), promise: null });
+    })
+    .catch((error) => {
+      // Не повторяем gateway-запрос на каждом задании: при rate limit следующая
+      // публикация использует уже имеющийся cache и попробует обновить его позже.
+      memberFetchState.set(guild.id, { loadedAt: Date.now(), promise: null });
+      logger.warn("Не удалось обновить кэш участников Discord", { error: error.message });
+    });
+  memberFetchState.set(guild.id, { loadedAt: current?.loadedAt || 0, promise });
+  return promise;
+}
 
 export function startPublisher(client, config, logger) {
   if (!config.useApi) {
@@ -100,7 +122,7 @@ async function publishCase(client, job, config, logger) {
 async function publishRoster(client, job, rosterMessageIds, config, logger) {
   const channel = await client.channels.fetch(CHANNELS.roster);
   const guild = channel.guild;
-  try { await guild.members.fetch(); } catch (e) { logger.warn("Не удалось загрузить участников (нужен Server Members Intent)", { error: e.message }); }
+  await ensureGuildMembers(guild, logger);
 
   const messages = buildRosterMessages(job.roster || [], guild);
   const newIds = [];
