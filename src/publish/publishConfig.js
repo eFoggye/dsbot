@@ -16,6 +16,9 @@ function channelIdByKey(key) {
 export const CHANNELS = {
   cases: channelIdByKey("sk_cases"),   // дела-ск
   roster: channelIdByKey("staff"),     // состав-ск
+  // Канал задач КСУ. Значение настраивается через env для тестовых серверов;
+  // fallback — боевой канал из утверждённого шаблона задач.
+  ksoTasks: process.env.KSO_TASKS_CHANNEL_ID?.trim() || "1450127497894166629",
   // Канал еженедельного отчёта (доступ — руководитель + Егорыч). ⚠️ ВПИСАТЬ ID, когда канал создадут.
   report: process.env.REPORT_CHANNEL_ID?.trim() || "",
   // Канал проверяемых отчётов по ПГСкО. Если отдельный канал ещё не создан,

@@ -11,6 +11,7 @@ import { buildRosterMessages } from "./rosterContent.js";
 import { buildReportMessage } from "./reportEmbed.js";
 import { buildActReviewMessage, buildActDecisionEdit } from "./actReviewEmbed.js";
 import { buildDisciplineMessage } from "./disciplineEmbed.js";
+import { buildKsoAssignmentMessage } from "./ksoAssignment.js";
 import {
   CHANNELS,
   PROSECUTOR_ROLE_ID,
@@ -83,6 +84,8 @@ async function pollOnce(client, config, logger) {
         await editActDecision(client, job, config, logger);
       } else if (job.type === "discipline") {
         await publishDiscipline(client, job, config, logger);
+      } else if (job.type === "kso_assignment") {
+        await publishKsoAssignment(client, job, config, logger);
       } else {
         logger.warn("Неизвестный тип задания публикации", { type: job.type });
       }
@@ -234,6 +237,26 @@ async function publishDiscipline(client, job, config, logger) {
   const sent = await channel.send(buildDisciplineMessage(job));
   logger.info("Взыскание опубликовано", { recordId: job.recordId, action: job.action, type: job.type, messageId: sent.id });
   await acknowledge({ type: "discipline_published", queueId: job.id, unit: job.unit || "", messageId: sent.id }, config, logger);
+}
+
+async function publishKsoAssignment(client, job, config, logger) {
+  if (!CHANNELS.ksoTasks) {
+    throw new Error("Не задан канал задач КСУ (KSO_TASKS_CHANNEL_ID)");
+  }
+  const channel = await client.channels.fetch(CHANNELS.ksoTasks);
+  const sent = await channel.send(buildKsoAssignmentMessage(job));
+  logger.info("Уведомление КСУ опубликовано", {
+    supervisionId: job.supervisionId,
+    kind: job.kind,
+    messageId: sent.id,
+  });
+  await acknowledge({
+    type: "kso_assignment_published",
+    queueId: job.id,
+    unit: job.unit || "",
+    supervisionId: job.supervisionId || "",
+    messageId: sent.id,
+  }, config, logger);
 }
 
 // Обработчик реакции ✅ в «дела-ск» → архивация дела (вызывается из index.js).
