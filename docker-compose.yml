@@ -1,9 +1,11 @@
 services:
   dsbot:
     build: .
-    container_name: dsbot
+    # Позволяет безопасно запускать отдельный экземпляр для ЦА рядом с Арбатом.
+    container_name: ${BOT_CONTAINER_NAME:-dsbot}
     # Переменные берутся из .env (создать из .env.example).
-    env_file: .env
+    env_file:
+      - ${BOT_ENV_FILE:-.env}
     # Автоперезапуск при падении/перезагрузке сервера.
     restart: unless-stopped
     # Логи переживают пересоздание контейнера.
