@@ -14,8 +14,8 @@ function channelIdByKey(key) {
   return entry ? entry[0] : "";
 }
 export const CHANNELS = {
-  cases: channelIdByKey("sk_cases"),   // дела-ск
-  roster: channelIdByKey("staff"),     // состав-ск
+  cases: process.env.CASES_CHANNEL_ID?.trim() || channelIdByKey("sk_cases"),
+  roster: process.env.ROSTER_CHANNEL_ID?.trim() || channelIdByKey("staff"),
   // Канал задач КСУ. Значение настраивается через env для тестовых серверов;
   // fallback — боевой канал из утверждённого шаблона задач.
   ksoTasks: process.env.KSO_TASKS_CHANNEL_ID?.trim() || "1450127497894166629",

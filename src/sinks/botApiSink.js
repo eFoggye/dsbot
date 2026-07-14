@@ -50,6 +50,9 @@ async function callBotApiOnce(config, body) {
         "x-sledak-timestamp": timestamp,
         "x-sledak-nonce": nonce,
         "x-sledak-signature": `sha256=${signature}`,
+        // Ключи портала разделены по управлениям. ID берём из BOT_UNIT,
+        // поэтому отдельный контейнер ЦА никогда не сможет читать очередь Арбата.
+        "x-sledak-key-id": config.botUnit,
       },
       body: bodyText,
       signal: controller.signal,
