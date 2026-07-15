@@ -62,6 +62,8 @@ export function loadConfig({ requireRuntime = true } = {}) {
   const botApiUrl = validateHttpUrl(process.env.BOT_API_URL?.trim() ?? "");
   const botApiSecret = process.env.BOT_API_SECRET?.trim() ?? "";
   const botUnit = process.env.BOT_UNIT?.trim().toLowerCase() || "";
+  const ocrEnabled = readBoolean(process.env.OCR_ENABLED, false);
+  const ocrApiKey = (process.env.OCR_API_KEY || process.env.ANTHROPIC_API_KEY)?.trim() ?? "";
 
   const errors = [];
   if (requireRuntime && !token) {
@@ -79,6 +81,9 @@ export function loadConfig({ requireRuntime = true } = {}) {
   if (botUnit && !VALID_BOT_UNITS.has(botUnit)) {
     errors.push(`Invalid BOT_UNIT: ${botUnit}`);
   }
+  if (requireRuntime && ocrEnabled && !ocrApiKey) {
+    errors.push("OCR_ENABLED=true requires OCR_API_KEY");
+  }
 
   if (errors.length > 0) {
     throw new Error(errors.join("; "));
@@ -95,8 +100,9 @@ export function loadConfig({ requireRuntime = true } = {}) {
     // Управление этого бота. Обязательно на бою: без него события без номера дела
     // нельзя безопасно привязать к нужному управлению.
     botUnit,
-    // OCR через aitunnel (OpenAI-совместимый). OCR_API_KEY обязателен для включения OCR.
-    ocrApiKey: (process.env.OCR_API_KEY || process.env.ANTHROPIC_API_KEY)?.trim() ?? "",
+    // OCR fail-closed: наличие ключа само по себе не включает распознавание.
+    ocrEnabled,
+    ocrApiKey,
     ocrBaseUrl: process.env.OCR_BASE_URL?.trim() || "https://api.aitunnel.ru/v1",
     ocrModel: process.env.OCR_MODEL?.trim() || "claude-haiku-4.5",
     // Allowlist авторов для канала состава: если задан, сообщения/правки состава

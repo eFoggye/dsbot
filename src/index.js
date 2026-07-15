@@ -37,6 +37,7 @@ client.once(Events.ClientReady, (readyClient) => {
     channels: Array.from(config.channelIds),
     outputDir: config.outputDir,
     apiEnabled: config.useApi,
+    ocrEnabled: config.ocrEnabled,
     storage: config.storage,
     guildMembersIntent: config.enableGuildMembersIntent,
     ignoreBots: config.ignoreBots,
@@ -73,8 +74,8 @@ async function processMessage(message, source) {
       caseNumber: event.parsed.caseNumber || undefined,
     });
 
-    // Приказы-картинки из «внутреннего оборота» → OCR через Claude Vision (если задан ключ).
-    if (config.ocrApiKey && event.sheetAction?.type === "internal_order_needs_ocr") {
+    // OCR выключен по умолчанию и запускается только явным OCR_ENABLED=true.
+    if (config.ocrEnabled && config.ocrApiKey && event.sheetAction?.type === "internal_order_needs_ocr") {
       await processOrderOcr(event);
     }
   } catch (error) {
