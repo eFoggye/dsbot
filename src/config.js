@@ -113,5 +113,6 @@ export function loadConfig({ requireRuntime = true } = {}) {
     logRawMessages: readBoolean(process.env.LOG_RAW_MESSAGES, false),
     logLevel: process.env.LOG_LEVEL?.trim() || "info",
     httpTimeoutMs: readInteger(process.env.HTTP_TIMEOUT_MS, 7000),
+    appRelease: process.env.APP_RELEASE?.trim() || process.env.RENDER_GIT_COMMIT?.trim() || "unknown",
   };
 }

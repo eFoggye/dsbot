@@ -41,6 +41,7 @@ client.once(Events.ClientReady, (readyClient) => {
     storage: config.storage,
     guildMembersIntent: config.enableGuildMembersIntent,
     ignoreBots: config.ignoreBots,
+    appRelease: config.appRelease,
   });
   // Реверс-публикации (таблица → Discord): опрос очереди заданий.
   startPublisher(readyClient, config, logger);

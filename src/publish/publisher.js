@@ -8,6 +8,7 @@ import { fetchPublishQueueFromApi, postActionToApi } from "../sinks/botApiSink.j
 import { buildCaseMessage } from "./caseEmbeds.js";
 import { buildPgSkOMessage } from "./pgskoEmbeds.js";
 import { buildRosterMessages } from "./rosterContent.js";
+import { deleteRosterMessages, reconcileRosterMessages, selectRosterMessageIds } from "./rosterReconciler.js";
 import { buildReportMessage } from "./reportEmbed.js";
 import { buildActReviewMessage, buildActDecisionEdit } from "./actReviewEmbed.js";
 import { buildDisciplineMessage } from "./disciplineEmbed.js";
@@ -55,8 +56,20 @@ export function startPublisher(client, config, logger) {
   // botUnit печатаем в лог. На бою BOT_UNIT обязателен, чтобы публиковать
   // только задания своего управления.
   logger.info("Публикатор запущен (polling очереди)", { intervalMs: POLL_INTERVAL_MS, storage: config.storage, botUnit: config.botUnit });
-  const tick = () => pollOnce(client, config, logger).catch((e) =>
-    logger.error("Ошибка опроса очереди", { error: e.message }));
+  let polling = false;
+  const tick = async () => {
+    // Долгая очистка Discord не должна пересекаться со следующим interval tick:
+    // иначе более старые publish/delete jobs могут завершиться в обратном порядке.
+    if (polling) return;
+    polling = true;
+    try {
+      await pollOnce(client, config, logger);
+    } catch (error) {
+      logger.error("Ошибка опроса очереди", { error: error.message });
+    } finally {
+      polling = false;
+    }
+  };
   setInterval(tick, POLL_INTERVAL_MS);
   tick();
 }
@@ -70,10 +83,16 @@ async function pollOnce(client, config, logger) {
     try {
       if (job.type === "case") {
         await publishCase(client, job, config, logger);
+      } else if (job.type === "case_publications_delete") {
+        await deleteCasePublications(client, job, config, logger);
       } else if (job.type === "roster") {
-        const idsByUnit = queue.rosterMessageIdsByUnit || {};
-        const rosterIds = idsByUnit[job.unit || ""] || (job.unit ? [] : (queue.rosterMessageIds || []));
+        // Ответ API уже отфильтрован по BOT_UNIT, поэтому прямой список —
+        // актуальные ID именно этого бота. Раньше при непустом job.unit он
+        // ошибочно игнорировался, и каждый снимок создавал новые сообщения.
+        const rosterIds = selectRosterMessageIds(queue, job.unit);
         await publishRoster(client, job, rosterIds, config, logger);
+      } else if (job.type === "roster_delete") {
+        await deleteRosterPublications(client, job, config, logger);
       } else if (job.type === "report") {
         await publishReport(client, job, config, logger);
       } else if (job.type === "pgsko_report") {
@@ -122,34 +141,120 @@ async function publishCase(client, job, config, logger) {
   );
 }
 
+// Физическое удаление дела на портале должно убрать и связанные публикации
+// в «дела-ск». Канал берётся только из локальной конфигурации бота: сохранённый
+// порталом channelId используется для сверки, но никогда не позволяет удалить
+// сообщение в произвольном Discord-канале.
+async function deleteCasePublications(client, job, config, logger) {
+  const channelId = String(CHANNELS.cases || "").trim();
+  if (!channelId) throw new Error("Не задан канал дел (CASE_CHANNEL_ID)");
+  const channel = await client.channels.fetch(channelId);
+  const publications = Array.isArray(job.publications) ? job.publications : [];
+  const messageIds = [...new Set(publications.map((publication) => {
+    const storedChannelId = String(publication?.channelId || "").trim();
+    if (storedChannelId && storedChannelId !== channelId) {
+      logger.warn("Публикация дела относится к другому каналу и пропущена", {
+        messageId: String(publication?.messageId || ""),
+        channelId: storedChannelId,
+      });
+      return "";
+    }
+    return String(publication?.messageId || "").trim();
+  }).filter(Boolean))];
+
+  let deleted = 0;
+  let missing = 0;
+  for (const id of messageIds) {
+    let message;
+    try {
+      message = await channel.messages.fetch(id);
+    } catch (error) {
+      if (String(error?.code || "") !== "10008") throw error;
+      message = null;
+    }
+    if (!message) {
+      missing += 1;
+      continue;
+    }
+    if (message.author?.id !== client.user?.id) {
+      logger.warn("Удаление чужого сообщения в дела-ск заблокировано", { messageId: id });
+      continue;
+    }
+    try {
+      await message.delete();
+      deleted += 1;
+    } catch (error) {
+      if (String(error?.code || "") !== "10008") throw error;
+      missing += 1;
+    }
+  }
+
+  logger.info("Публикации удалённого дела очищены", {
+    requested: messageIds.length,
+    deleted,
+    missing,
+  });
+  await acknowledge({
+    type: "case_publications_deleted",
+    queueId: job.id,
+    unit: job.unit || "",
+    messageIds,
+    deletedCount: deleted,
+    missingCount: missing,
+  }, config, logger);
+}
+
 async function publishRoster(client, job, rosterMessageIds, config, logger) {
   const channel = await client.channels.fetch(CHANNELS.roster);
   const guild = channel.guild;
   await ensureGuildMembers(guild, logger);
 
   const messages = buildRosterMessages(job.roster || [], guild);
-  const newIds = [];
+  const result = await reconcileRosterMessages(channel, client.user?.id, messages, rosterMessageIds);
+  logger.info("Состав синхронизирован в состав-ск", {
+    messages: result.messageIds.length,
+    created: result.created,
+    edited: result.edited,
+    deletedDuplicates: result.deletedDuplicates,
+  });
+  await acknowledge({
+    type: "roster_published",
+    queueId: job.id,
+    unit: job.unit || "",
+    messageIds: result.messageIds,
+  }, config, logger);
+}
 
-  // Если число сообщений совпало — редактируем; иначе удаляем старые и создаём заново.
-  const canEdit = rosterMessageIds.length === messages.length && messages.length > 0;
-  if (canEdit) {
-    for (let i = 0; i < messages.length; i++) {
-      const m = await channel.messages.fetch(rosterMessageIds[i]).catch(() => null);
-      if (m) { await m.edit(messages[i]); newIds.push(m.id); }
-      else { const sent = await channel.send(messages[i]); newIds.push(sent.id); }
-    }
-  } else {
-    for (const oldId of rosterMessageIds) {
-      const m = await channel.messages.fetch(oldId).catch(() => null);
-      if (m) await m.delete().catch(() => {});
-    }
-    for (const payload of messages) {
-      const sent = await channel.send(payload);
-      newIds.push(sent.id);
-    }
-  }
-  logger.info("Состав опубликован в состав-ск", { messages: newIds.length });
-  await acknowledge({ type: "roster_published", queueId: job.id, unit: job.unit || "", messageIds: newIds }, config, logger);
+// Удаляет сохранённые публикации состава, а при purge дополнительно сканирует
+// канал и находит исторические дубли. Поэтому число messageIds от портала — это
+// лишь актуальный снимок, а не полный фактический счётчик сообщений в Discord.
+// Ошибки "Unknown Message" считаются успешным результатом: карточка уже могла
+// быть удалена вручную в Discord.
+async function deleteRosterPublications(client, job, config, logger) {
+  const channel = await client.channels.fetch(CHANNELS.roster);
+  const payloads = buildRosterMessages([], channel.guild);
+  const result = await deleteRosterMessages(
+    channel,
+    client.user?.id,
+    payloads,
+    Array.isArray(job.messageIds) ? job.messageIds : [],
+    { purge: job.purge === true },
+  );
+  const messageIds = result.messageIds;
+  logger.info("Карточки состава удалены по команде портала", {
+    tracked: Array.isArray(job.messageIds) ? job.messageIds.length : 0,
+    discovered: messageIds.length,
+    deleted: result.deleted,
+    purge: !!job.purge,
+  });
+  await acknowledge({
+    type: "roster_deleted",
+    queueId: job.id,
+    unit: job.unit || "",
+    messageIds,
+    discoveredCount: messageIds.length,
+    deletedCount: result.deleted,
+  }, config, logger);
 }
 
 async function publishReport(client, job, config, logger) {
