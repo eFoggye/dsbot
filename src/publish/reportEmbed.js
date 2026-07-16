@@ -3,7 +3,7 @@
  * Данные собирает Apps Script (collectWeeklyReport_) и присылает в задании type="report".
  */
 
-import { REPORT_COLOR, COAT_OF_ARMS_URL, EMBED_FOOTER } from "./publishConfig.js";
+import { REPORT_COLOR, COAT_OF_ARMS_URL, embedFooterForUnit } from "./publishConfig.js";
 
 // «Фамилия Имя Отчество» -> «Фамилия И.О.»
 function shortName(fio) {
@@ -92,7 +92,7 @@ export function buildReportMessage(job) {
     description: `Период: **${job.period || ""}**`,
     thumbnail: { url: COAT_OF_ARMS_URL },
     fields,
-    footer: { text: EMBED_FOOTER, icon_url: COAT_OF_ARMS_URL },
+    footer: { text: embedFooterForUnit(job.unit), icon_url: COAT_OF_ARMS_URL },
     timestamp: new Date().toISOString(),
   };
 

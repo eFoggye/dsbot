@@ -1,4 +1,4 @@
-const DEFAULT_SCAN_PAGES = 3;
+const DEFAULT_SCAN_PAGES = Number.POSITIVE_INFINITY;
 
 function text(value) {
   return String(value || "").trim();
@@ -10,6 +10,10 @@ export function rosterPayloadTitle(payload) {
 
 export function rosterMessageTitle(message) {
   return text(message?.embeds?.[0]?.title);
+}
+
+export function rosterBaseTitle(value) {
+  return text(value).replace(/\s+\(\d+\/\d+\)$/, "");
 }
 
 // Текущий API отдаёт уже отфильтрованный список rosterMessageIds. Старый
@@ -55,11 +59,12 @@ export async function discoverRosterMessages(channel, botUserId, payloads, {
   minCreatedAt = 0,
 } = {}) {
   const expectedTitles = new Set(payloads.map(rosterPayloadTitle).filter(Boolean));
+  const expectedBaseTitles = new Set([...expectedTitles].map(rosterBaseTitle));
   const found = new Map();
 
   const add = (message, enforceAge = false) => {
     if (!message?.id || message.author?.id !== botUserId) return;
-    if (!expectedTitles.has(rosterMessageTitle(message))) return;
+    if (!expectedBaseTitles.has(rosterBaseTitle(rosterMessageTitle(message)))) return;
     if (enforceAge && minCreatedAt && Number(message.createdTimestamp || 0) < minCreatedAt) return;
     found.set(String(message.id), message);
   };
@@ -124,9 +129,15 @@ export async function reconcileRosterMessages(channel, botUserId, payloads, trac
   for (const payload of payloads) {
     const title = rosterPayloadTitle(payload);
     if (!title) throw new Error("Карточка состава не содержит заголовок секции");
+    const baseTitle = rosterBaseTitle(title);
     const matching = [...candidates.values()]
-      .filter((message) => rosterMessageTitle(message) === title)
-      .sort(preferred);
+      .filter((message) => rosterBaseTitle(rosterMessageTitle(message)) === baseTitle)
+      .sort((left, right) => {
+        const leftExact = rosterMessageTitle(left) === title;
+        const rightExact = rosterMessageTitle(right) === title;
+        if (leftExact !== rightExact) return leftExact ? -1 : 1;
+        return preferred(left, right);
+      });
 
     let primary = matching[0] || null;
     if (primary) {
@@ -144,11 +155,13 @@ export async function reconcileRosterMessages(channel, botUserId, payloads, trac
       created += 1;
     }
     newIds.push(String(primary.id));
+    candidates.delete(String(primary.id));
+  }
 
-    for (const duplicate of matching.slice(1)) {
-      if (await deleteMessage(duplicate)) deletedDuplicates += 1;
-      candidates.delete(String(duplicate.id));
-    }
+  // Всё, что осталось с каноническим base-title, — лишняя старая карточка:
+  // дубль либо устаревший chunk после уменьшения раздела.
+  for (const duplicate of candidates.values()) {
+    if (await deleteMessage(duplicate)) deletedDuplicates += 1;
   }
 
   return { messageIds: newIds, created, edited, deletedDuplicates };
@@ -156,12 +169,12 @@ export async function reconcileRosterMessages(channel, botUserId, payloads, trac
 
 export async function deleteRosterMessages(channel, botUserId, payloads, trackedIds, {
   purge = false,
-  purgeMaxAgeMs = 30 * 24 * 60 * 60 * 1000,
+  purgeMaxAgeMs = Number.POSITIVE_INFINITY,
 } = {}) {
   const found = await discoverRosterMessages(channel, botUserId, payloads, {
     trackedIds,
     scanPages: purge ? DEFAULT_SCAN_PAGES : 0,
-    minCreatedAt: purge ? Date.now() - purgeMaxAgeMs : 0,
+    minCreatedAt: purge && Number.isFinite(purgeMaxAgeMs) ? Date.now() - purgeMaxAgeMs : 0,
   });
   let deleted = 0;
   for (const message of found.values()) {

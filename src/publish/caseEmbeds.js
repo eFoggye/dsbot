@@ -4,8 +4,8 @@
  */
 
 import {
-  CASE_COLORS, COAT_OF_ARMS_URL, EMBED_FOOTER,
-  PROSECUTOR_ROLE_ID, PROSECUTOR_ROLE_NAME,
+  CASE_COLORS, COAT_OF_ARMS_URL,
+  PROSECUTOR_ROLE_NAME, embedFooterForUnit, prosecutorRoleIdForUnit,
 } from "./publishConfig.js";
 
 const BODIES = {
@@ -77,12 +77,13 @@ function safeHttpUrl(u) {
  * Собирает сообщение для дела.
  * @returns { content, embeds, allowedMentions } для channel.send / message.edit
  */
-export function buildCaseMessage({ status, caseNumber, investigator, docUrl }) {
+export function buildCaseMessage({ status, caseNumber, investigator, docUrl, unit }) {
   const normalizedStatus = canonicalStatus(status);
   const body = BODIES[normalizedStatus];
   if (!body) return null;
 
-  const roleMention = PROSECUTOR_ROLE_ID ? `<@&${PROSECUTOR_ROLE_ID}>` : PROSECUTOR_ROLE_NAME;
+  const prosecutorRoleId = prosecutorRoleIdForUnit(unit);
+  const roleMention = prosecutorRoleId ? `<@&${prosecutorRoleId}>` : PROSECUTOR_ROLE_NAME;
   const description = `${body}\n\n**С уважением,** ${investigator || ""}`.trim();
 
   const embed = {
@@ -90,7 +91,7 @@ export function buildCaseMessage({ status, caseNumber, investigator, docUrl }) {
     title: title(normalizedStatus, caseNumber, investigator),
     description,
     thumbnail: { url: COAT_OF_ARMS_URL },
-    footer: { text: EMBED_FOOTER, icon_url: COAT_OF_ARMS_URL },
+    footer: { text: embedFooterForUnit(unit), icon_url: COAT_OF_ARMS_URL },
     timestamp: new Date().toISOString(),
   };
 
@@ -101,6 +102,6 @@ export function buildCaseMessage({ status, caseNumber, investigator, docUrl }) {
   return {
     content: `Уведомление для ${roleMention}`,
     embeds: [embed],
-    allowedMentions: PROSECUTOR_ROLE_ID ? { roles: [PROSECUTOR_ROLE_ID] } : { parse: ["roles"] },
+    allowedMentions: prosecutorRoleId ? { parse: [], roles: [prosecutorRoleId] } : { parse: [] },
   };
 }

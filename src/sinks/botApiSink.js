@@ -21,12 +21,21 @@ const RETRY_QUEUE_FILE = "retry-queue.ndjson";
 const RETRY_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 1000; // 1с → 2с между попытками
 const RETRY_LOOP_INTERVAL_MS = 90_000;
-const MAX_QUEUE_ENTRIES = 500; // защита от бесконечного роста файла
-const MAX_QUEUE_AGE_MS = 24 * 60 * 60 * 1000; // старше суток — не досылаем
 const FLUSH_BATCH_LIMIT = 8;   // за один проход шлём не больше — чтобы не превысить rate-limit API
 const FLUSH_GAP_MS = 800;      // пауза между отправками внутри пачки
+const TERMINAL_API_CODES = new Set(["STALE_CLAIM", "OUTBOX_NOT_FOUND", "UNIT_MISMATCH"]);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export class BotApiError extends Error {
+  constructor(message, { status = 0, code = "", terminal = false } = {}) {
+    super(message);
+    this.name = "BotApiError";
+    this.status = status;
+    this.code = code;
+    this.terminal = terminal;
+  }
+}
 
 function signBody(secret, bodyText, timestamp, nonce) {
   return crypto
@@ -59,7 +68,12 @@ async function callBotApiOnce(config, body) {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.ok === false) {
-      throw new Error(data.error || `bot API HTTP ${response.status}`);
+      const code = String(data.code || "");
+      throw new BotApiError(data.error || `bot API HTTP ${response.status}`, {
+        status: response.status,
+        code,
+        terminal: TERMINAL_API_CODES.has(code),
+      });
     }
     return data.result;
   } finally {
@@ -74,6 +88,7 @@ async function callBotApi(config, body, { attempts = 1 } = {}) {
       return await callBotApiOnce(config, body);
     } catch (error) {
       lastError = error;
+      if (error?.terminal) throw error;
       if (attempt < attempts - 1) await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt);
     }
   }
@@ -90,6 +105,10 @@ const pendingDuringFlush = [];
 
 function retryQueuePath(config) {
   return path.join(config.outputDir, RETRY_QUEUE_FILE);
+}
+
+function retryDeadLetterPath(config) {
+  return path.join(config.outputDir, "retry-dead-letter.ndjson");
 }
 
 async function appendQueueLines(config, lines) {
@@ -122,20 +141,24 @@ export async function flushApiRetryQueue(config, logger) {
     if (lines.length === 0) return;
 
     const keep = [];
+    const malformed = [];
     let sent = 0;
     let dropped = 0;
+    let terminal = 0;
     let budget = FLUSH_BATCH_LIMIT;
     let stop = false; // API отвалился (напр. rate-limit) — прекращаем долбить в этом проходе
-    for (const line of lines.slice(-MAX_QUEUE_ENTRIES)) {
+    for (const line of lines) {
       let entry;
       try {
         entry = JSON.parse(line);
       } catch {
         dropped += 1;
+        malformed.push(JSON.stringify({ movedAt: Date.now(), reason: "invalid_json", raw: line }));
         continue;
       }
-      if (!entry?.body || Date.now() - (entry.queuedAt || 0) > MAX_QUEUE_AGE_MS) {
+      if (!entry?.body) {
         dropped += 1;
+        malformed.push(JSON.stringify({ movedAt: Date.now(), reason: "missing_body", entry }));
         continue;
       }
       if (stop || budget <= 0) { // лимит пачки исчерпан или API упал — остальное на следующий цикл
@@ -147,7 +170,12 @@ export async function flushApiRetryQueue(config, logger) {
         sent += 1;
         budget -= 1;
         if (budget > 0) await sleep(FLUSH_GAP_MS);
-      } catch {
+      } catch (error) {
+        if (error?.terminal) {
+          terminal += 1;
+          budget -= 1;
+          continue;
+        }
         keep.push(line);
         stop = true; // первая же ошибка (обычно rate-limit) останавливает досылку — не усугубляем бан
       }
@@ -156,8 +184,9 @@ export async function flushApiRetryQueue(config, logger) {
     const tmp = `${file}.tmp`;
     await fs.writeFile(tmp, keep.length ? `${keep.join("\n")}\n` : "", { encoding: "utf8", mode: 0o600 });
     await fs.rename(tmp, file);
-    if (sent || dropped || keep.length) {
-      logger.info("Retry-очередь API", { sent, left: keep.length, dropped });
+    if (malformed.length) await fs.appendFile(retryDeadLetterPath(config), `${malformed.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
+    if (sent || dropped || terminal || keep.length) {
+      logger.info("Retry-очередь API", { sent, left: keep.length, dropped, terminal });
     }
   } catch (error) {
     logger.warn("Ошибка обработки retry-очереди", { error: error.message });
@@ -173,14 +202,17 @@ export async function flushApiRetryQueue(config, logger) {
 }
 
 // Фоновая досылка: сразу при старте (добираем хвост прошлого запуска) и далее раз в минуту.
-export function startApiRetryLoop(config, logger) {
+export function startApiRetryLoop(config, logger, { flushImmediately = true } = {}) {
   if (!config.useApi) return null;
-  flushApiRetryQueue(config, logger);
+  if (flushImmediately) flushApiRetryQueue(config, logger);
   const timer = setInterval(() => {
     flushApiRetryQueue(config, logger);
   }, RETRY_LOOP_INTERVAL_MS);
   timer.unref?.();
-  return timer;
+  return {
+    stop() { clearInterval(timer); },
+    flush() { return flushApiRetryQueue(config, logger); },
+  };
 }
 
 // Сырое сообщение Discord + распознанное действие (если есть) — на сервер одним запросом.
@@ -203,17 +235,37 @@ export async function postMessageEventToApi(event, config, logger) {
 
 // Произвольное действие (распознанный sheetAction или подтверждение публикации).
 export async function postActionToApi(action, meta, config, logger) {
-  if (!action) return;
+  if (!action) return { delivered: true, queued: false };
   const body = { op: "action", action, meta: meta || {} };
   try {
     await callBotApi(config, body, { attempts: RETRY_ATTEMPTS });
+    return { delivered: true, queued: false };
   } catch (error) {
+    if (error?.terminal) {
+      logger.info("API отклонил устаревшее действие — повтор не нужен", {
+        actionType: action.type,
+        code: error.code,
+      });
+      return { delivered: false, queued: false, terminal: true };
+    }
     logger.warn("API delivery failed — действие в retry-очередь", {
       error: error.message,
       actionType: action.type,
     });
     await enqueueRetry(config, logger, body);
+    return { delivered: false, queued: true };
   }
+}
+
+export async function postPublicationFailureToApi(job, error, config, logger) {
+  return postActionToApi({
+    type: "publication_failed",
+    queueId: String(job?.id || ""),
+    claimToken: String(job?.claimToken || ""),
+    unit: String(job?.unit || config.botUnit || ""),
+    error: String(error?.message || error || "Discord publication failed").slice(0, 1000),
+    errorCode: String(error?.code || error?.name || "DISCORD_ERROR").slice(0, 80),
+  }, {}, config, logger);
 }
 
 // Очередь заданий на публикацию в Discord: { ok, jobs, rosterMessageIds } либо null.
@@ -221,7 +273,12 @@ export async function postActionToApi(action, meta, config, logger) {
 // своего управления. Без ретраев: это периодический опрос, publisher повторит сам.
 export async function fetchPublishQueueFromApi(config, logger, unit) {
   try {
-    return await callBotApi(config, { op: "queue", unit: String(unit || "") });
+    return await callBotApi(config, {
+      op: "queue",
+      unit: String(unit || ""),
+      protocolVersion: 2,
+      appRelease: String(config.appRelease || ""),
+    });
   } catch (error) {
     logger.warn("Не удалось получить очередь публикаций (API)", { error: error.message });
     return null;

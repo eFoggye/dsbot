@@ -65,8 +65,12 @@ npm start
 | `REPORT_CHANNEL_ID` | ID канала еженедельного отчёта |
 | `PGSKO_REPORT_CHANNEL_ID` | ID канала проверки отчётов ПГСкО |
 | `ACT_REVIEW_CHANNEL_ID` | ID канала «акты-и-делоодобрение» |
+| `DISCIPLINE_CHANNEL_ID` | ID канала уведомлений о взысканиях |
+| `KSO_TASKS_CHANNEL_ID` | ID канала задач КСУ |
+| `CASES_LEGACY_CHANNEL_IDS` | allowlist старых каналов дел для безопасной очистки после переноса |
 | `PGSKO_APPROVER_ROLE_ID` | ID роли, чья ✅ засчитывает ПГСкО; без него реакции игнорируются |
 | `PROSECUTOR_ROLE_ID` | ID роли прокуратуры (для публикаций и архивации по ✅) |
+| `APP_RELEASE` | полный Git SHA запущенного бота; портал показывает его в health |
 | `OCR_ENABLED` | `false` по умолчанию; только явное `true` включает OCR приказов |
 | `OCR_API_KEY` | ключ aitunnel; сам по себе OCR не включает |
 | `LOG_RAW_MESSAGES` | `false` на бою; `true` только для временной диагностики сырых Discord-снапшотов |
@@ -78,9 +82,9 @@ npm start
 
 Интенты: `Guilds`, `GuildMessages`, `MessageContent`, `GuildMessageReactions`, `GuildMembers`.
 
-`MessageContent` и `GuildMembers` — привилегированные, включаются в Developer Portal (Bot → Privileged Gateway Intents). `MessageContent` нужен, чтобы видеть текст сообщений; `GuildMembers` — чтобы упоминать сотрудников по нику при публикации состава.
+`MessageContent` — привилегированный и включается в Developer Portal (Bot → Privileged Gateway Intents). `GuildMembers` необязателен: состав использует только подтверждённый Discord ID из портала, а не изменяемый ник.
 
-Права на каналах: `View Channel`, `Read Message History`, `Send Messages`, `Add Reactions`. Модераторские права (`Administrator`, `Manage Messages`, `Manage Roles`, `Ban`, `Kick`) не нужны.
+Права на каналах: `View Channel`, `Read Message History`, `Send Messages`, `Embed Links`, `Add Reactions`. Модераторские права (`Administrator`, `Manage Messages`, `Manage Roles`, `Ban`, `Kick`) не нужны. При старте бот проверяет доступность всех каналов и эти права.
 
 Как создать бота, токен и включить интенты — в `integration/DISCORD-BOT-SETUP.md`.
 
@@ -104,6 +108,8 @@ ID каналов — в `src/channelRules.js`.
 - `raw-messages.ndjson` — сырой снимок всех полей сообщения Discord, только если `LOG_RAW_MESSAGES=true`;
 - `messages.csv` — плоская таблица для просмотра;
 - `sheet-actions.ndjson` — только распознанные действия.
+- `retry-queue.ndjson` — надёжная очередь недоставленных API-действий без лимита в 500 строк;
+- `retry-dead-letter.ndjson` — повреждённые локальные записи, сохранённые для разбора вместо тихого удаления.
 
 ## Команды
 

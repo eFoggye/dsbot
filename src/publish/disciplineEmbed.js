@@ -4,7 +4,7 @@
  * Сюда прилетает уведомление о выданном/снятом взыскании в формате руководства.
  */
 
-import { COAT_OF_ARMS_URL, EMBED_FOOTER } from "./publishConfig.js";
+import { COAT_OF_ARMS_URL, embedFooterForUnit } from "./publishConfig.js";
 
 function escapeMarkdown(text) {
   return String(text ?? "")
@@ -57,7 +57,7 @@ export function buildDisciplineMessage(job) {
       : "Решение вынесено руководством управления через ГАС «Следак».",
     thumbnail: { url: COAT_OF_ARMS_URL },
     fields,
-    footer: { text: EMBED_FOOTER, icon_url: COAT_OF_ARMS_URL },
+    footer: { text: embedFooterForUnit(job.unit), icon_url: COAT_OF_ARMS_URL },
     timestamp: new Date().toISOString(),
   };
   return { embeds: [embed], allowedMentions: { parse: ["users"] } };

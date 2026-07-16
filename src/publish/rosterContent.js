@@ -7,13 +7,15 @@
 
 import {
   COAT_OF_ARMS_URL,
-  EMBED_FOOTER,
-  RANK_EMOJI,
   ROSTER_COLOR,
   ROSTER_SECTIONS,
-  POSITION_ROLE_IDS,
+  embedFooterForUnit,
+  positionRoleIdsForUnit,
+  rankEmojiMapForUnit,
   positionEmoji,
 } from "./publishConfig.js";
+
+export const DISCORD_EMBED_DESCRIPTION_LIMIT = 4096;
 
 function escapeMarkdown(text) {
   return String(text ?? "")
@@ -21,25 +23,25 @@ function escapeMarkdown(text) {
     .replace(/([*_`~|])/g, "\\$1");
 }
 
-function resolveMention(guild, fio) {
-  if (!guild) return escapeMarkdown(fio);
-  const member = guild.members.cache.find(
-    (m) => (m.displayName || m.user.globalName || m.user.username) === fio,
-  );
-  return member ? `<@${member.id}>` : escapeMarkdown(fio);
+function resolveMention(guild, person) {
+  const id = String(person?.discordId || "").trim();
+  // Discord identity comes only from the verified portal account. Display names
+  // are mutable and non-unique, so they must never be used as an identity key.
+  if (/^\d{15,22}$/.test(id)) return `<@${id}>`;
+  return escapeMarkdown(person?.fio || "");
 }
 
-function positionLabel(position) {
-  const roleId = POSITION_ROLE_IDS[position];
+function positionLabel(position, unit) {
+  const roleId = positionRoleIdsForUnit(unit)[position];
   if (roleId) return `<@&${roleId}>`;
   return `${positionEmoji(position)} ${escapeMarkdown(position || "Неизвестная роль")}`.trim();
 }
 
-function rankBrackets(rank) {
+function rankBrackets(rank, unit) {
   const normalized = String(rank || "")
     .replace(/\s+юстиции\s*$/iu, "")
     .trim();
-  const label = RANK_EMOJI[normalized] || escapeMarkdown(rank || "—");
+  const label = rankEmojiMapForUnit(unit)[normalized] || escapeMarkdown(rank || "—");
   return `[ ${label} ]`;
 }
 
@@ -67,8 +69,8 @@ function formatDate(value) {
   return escapeMarkdown(value);
 }
 
-function personLine(guild, person, bullet = "") {
-  const rank = rankBrackets(person.rank);
+function personLine(guild, person, bullet = "", unit = "arbat") {
+  const rank = rankBrackets(person.rank, unit);
   const warnings = toNumber(person.warnings);
   const reprimands = toNumber(person.reprimands);
   const joinedAt = person.joinedAt || person.joinDate;
@@ -83,13 +85,13 @@ function personLine(guild, person, bullet = "") {
     details.push(from && until ? `Отпуск: ${from}–${until}` : (until ? `В отпуске до ${until}` : "В отпуске"));
   }
   return [
-    `${bullet}${positionLabel(person.position)} - ${resolveMention(guild, person.fio)}${rank ? ` ${rank}` : ""}`,
+    `${bullet}${positionLabel(person.position, unit)} - ${resolveMention(guild, person)}${rank ? ` ${rank}` : ""}`,
     details.join(" | "),
   ].join("\n");
 }
 
-function vacancyLine(position, bullet = "") {
-  return `${bullet}${positionLabel(position)} - *Вакантно*`;
+function vacancyLine(position, bullet = "", unit = "arbat") {
+  return `${bullet}${positionLabel(position, unit)} - *Вакантно*`;
 }
 
 function isManagement(person) {
@@ -123,7 +125,7 @@ function bySectionPosition(section) {
   };
 }
 
-function descriptionForSection(section, people, guild) {
+function descriptionForSection(section, people, guild, unit) {
   const sorted = [...people].sort(bySectionPosition(section));
   const lines = [];
   const used = new Set();
@@ -132,35 +134,45 @@ function descriptionForSection(section, people, guild) {
     const byPosition = sorted.filter((person) => person.position === position);
     if (byPosition.length) {
       byPosition.forEach((person) => {
-        lines.push(personLine(guild, person, section.bullet || ""));
+        lines.push(personLine(guild, person, section.bullet || "", unit));
         used.add(person);
       });
     } else if (section.showVacancies) {
-      lines.push(vacancyLine(position, section.bullet || ""));
+      lines.push(vacancyLine(position, section.bullet || "", unit));
     }
   }
 
   for (const person of sorted) {
-    if (!used.has(person)) lines.push(personLine(guild, person, section.bullet || ""));
+    if (!used.has(person)) lines.push(personLine(guild, person, section.bullet || "", unit));
   }
 
   return lines.length ? lines.join("\n") : "*Вакантно*";
 }
 
-function buildEmbed(section, people, guild, index, total) {
-  const embed = {
-    color: section.color ?? ROSTER_COLOR,
-    title: `${section.icon} | ${section.title}:`,
-    description: descriptionForSection(section, people, guild),
+export function splitRosterDescription(description, limit = DISCORD_EMBED_DESCRIPTION_LIMIT) {
+  const chunks = [];
+  let current = "";
+  const push = () => {
+    if (current) chunks.push(current);
+    current = "";
   };
-
-  if (index === 0) embed.thumbnail = { url: COAT_OF_ARMS_URL };
-  if (index === total - 1) {
-    embed.footer = { text: EMBED_FOOTER, icon_url: COAT_OF_ARMS_URL };
-    embed.timestamp = new Date().toISOString();
+  for (const rawLine of String(description || "").split("\n")) {
+    let line = rawLine;
+    while (line.length > limit) {
+      if (current) push();
+      chunks.push(line.slice(0, limit));
+      line = line.slice(limit);
+    }
+    const candidate = current ? `${current}\n${line}` : line;
+    if (candidate.length > limit) {
+      push();
+      current = line;
+    } else {
+      current = candidate;
+    }
   }
-
-  return embed;
+  push();
+  return chunks.length ? chunks : ["*Вакантно*"];
 }
 
 /**
@@ -168,10 +180,28 @@ function buildEmbed(section, people, guild, index, total) {
  * @param guild  — Discord Guild (для резолва ников); может быть null (тогда ФИО текстом)
  * @returns массив payload-объектов для channel.send / message.edit
  */
-export function buildRosterMessages(roster, guild) {
+export function buildRosterMessages(roster, guild, { unit = "arbat" } = {}) {
   const active = (roster || []).filter((p) => p.fio && p.status !== "Уволен");
-  return ROSTER_SECTIONS.map((section, index) => ({
-    embeds: [buildEmbed(section, sectionPeople(active, section), guild, index, ROSTER_SECTIONS.length)],
-    allowedMentions: { parse: [] },
-  }));
+  const payloads = [];
+  for (const section of ROSTER_SECTIONS) {
+    const baseTitle = `${section.icon} | ${section.title}:`;
+    const chunks = splitRosterDescription(descriptionForSection(section, sectionPeople(active, section), guild, unit));
+    chunks.forEach((description, chunkIndex) => {
+      payloads.push({
+        embeds: [{
+          color: section.color ?? ROSTER_COLOR,
+          title: chunks.length > 1 ? `${baseTitle} (${chunkIndex + 1}/${chunks.length})` : baseTitle,
+          description,
+        }],
+        allowedMentions: { parse: [] },
+      });
+    });
+  }
+  if (payloads[0]) payloads[0].embeds[0].thumbnail = { url: COAT_OF_ARMS_URL };
+  const last = payloads[payloads.length - 1]?.embeds?.[0];
+  if (last) {
+    last.footer = { text: embedFooterForUnit(unit), icon_url: COAT_OF_ARMS_URL };
+    last.timestamp = new Date().toISOString();
+  }
+  return payloads;
 }

@@ -4,7 +4,7 @@
  * Плюс архивация дела по реакции ✅ от прокуратуры.
  */
 
-import { fetchPublishQueueFromApi, postActionToApi } from "../sinks/botApiSink.js";
+import { fetchPublishQueueFromApi, postActionToApi, postPublicationFailureToApi } from "../sinks/botApiSink.js";
 import { buildCaseMessage } from "./caseEmbeds.js";
 import { buildPgSkOMessage } from "./pgskoEmbeds.js";
 import { buildRosterMessages } from "./rosterContent.js";
@@ -14,67 +14,60 @@ import { buildActReviewMessage, buildActDecisionEdit } from "./actReviewEmbed.js
 import { buildDisciplineMessage } from "./disciplineEmbed.js";
 import { buildKsoAssignmentMessage } from "./ksoAssignment.js";
 import {
-  CHANNELS,
-  PROSECUTOR_ROLE_ID,
+  findPublicationMessages,
+  publicationQueueIdFromMessage,
+  publishOnce,
+  withPublicationMarker,
+} from "./publicationDelivery.js";
+import {
   ARCHIVE_EMOJI,
-  ARCHIVE_REQUIRE_PROSECUTOR,
   PGSKO_APPROVE_EMOJI,
-  PGSKO_APPROVER_ROLE_ID,
+  casePublicationChannelIds,
+  pgskoApproverRoleIdForUnit,
+  prosecutorRoleIdForUnit,
+  publicationChannelsForUnit,
 } from "./publishConfig.js";
 
 // 30 сек: публикация состава/дел не требует секундной реактивности, а редкий
 // опрос бережёт лимит API портала (бот с одного IP не должен долбить бэкенд).
 const POLL_INTERVAL_MS = 30000;
-const MEMBER_CACHE_TTL_MS = 10 * 60 * 1000;
-const memberFetchState = new Map();
-
-async function ensureGuildMembers(guild, logger) {
-  const current = memberFetchState.get(guild.id);
-  const now = Date.now();
-  if (current?.promise) return current.promise;
-  if (current?.loadedAt && now - current.loadedAt < MEMBER_CACHE_TTL_MS) return;
-
-  const promise = guild.members.fetch()
-    .then(() => {
-      memberFetchState.set(guild.id, { loadedAt: Date.now(), promise: null });
-    })
-    .catch((error) => {
-      // Не повторяем gateway-запрос на каждом задании: при rate limit следующая
-      // публикация использует уже имеющийся cache и попробует обновить его позже.
-      memberFetchState.set(guild.id, { loadedAt: Date.now(), promise: null });
-      logger.warn("Не удалось обновить кэш участников Discord", { error: error.message });
-    });
-  memberFetchState.set(guild.id, { loadedAt: current?.loadedAt || 0, promise });
-  return promise;
-}
 
 export function startPublisher(client, config, logger) {
   if (!config.useApi) {
     logger.info("Публикатор выключен: не заданы BOT_API_URL/BOT_API_SECRET");
-    return;
+    return { stop() {}, async drain() {} };
   }
   // botUnit печатаем в лог. На бою BOT_UNIT обязателен, чтобы публиковать
   // только задания своего управления.
   logger.info("Публикатор запущен (polling очереди)", { intervalMs: POLL_INTERVAL_MS, storage: config.storage, botUnit: config.botUnit });
-  let polling = false;
-  const tick = async () => {
+  let stopped = false;
+  let activeTick = null;
+  const tick = () => {
     // Долгая очистка Discord не должна пересекаться со следующим interval tick:
     // иначе более старые publish/delete jobs могут завершиться в обратном порядке.
-    if (polling) return;
-    polling = true;
-    try {
-      await pollOnce(client, config, logger);
-    } catch (error) {
-      logger.error("Ошибка опроса очереди", { error: error.message });
-    } finally {
-      polling = false;
-    }
+    if (stopped) return Promise.resolve();
+    if (activeTick) return activeTick;
+    activeTick = pollOnce(client, config, logger)
+      .catch((error) => logger.error("Ошибка опроса очереди", { error: error.message }))
+      .finally(() => { activeTick = null; });
+    return activeTick;
   };
-  setInterval(tick, POLL_INTERVAL_MS);
-  tick();
+  const timer = setInterval(tick, POLL_INTERVAL_MS);
+  timer.unref?.();
+  const startup = preflightPublicationChannels(client, config, logger).then(tick);
+  return {
+    stop() {
+      stopped = true;
+      clearInterval(timer);
+    },
+    async drain() {
+      await startup;
+      if (activeTick) await activeTick;
+    },
+  };
 }
 
-async function pollOnce(client, config, logger) {
+export async function pollOnce(client, config, logger) {
   // Управление бота (env BOT_UNIT) → сервер отдаёт задания строго этого управления.
   const queue = await fetchQueue(config, logger, config.botUnit);
   if (!queue || !Array.isArray(queue.jobs) || queue.jobs.length === 0) return;
@@ -106,10 +99,13 @@ async function pollOnce(client, config, logger) {
       } else if (job.type === "kso_assignment") {
         await publishKsoAssignment(client, job, config, logger);
       } else {
-        logger.warn("Неизвестный тип задания публикации", { type: job.type });
+        throw Object.assign(new Error(`Неизвестный тип задания публикации: ${job.type || "<empty>"}`), {
+          code: "UNSUPPORTED_PUBLICATION_JOB",
+        });
       }
     } catch (error) {
       logger.error("Не удалось выполнить задание публикации", { error: error.message, jobId: job.id });
+      await postPublicationFailureToApi(job, error, config, logger);
     }
   }
 }
@@ -118,53 +114,134 @@ async function fetchQueue(config, logger, unit) {
   return fetchPublishQueueFromApi(config, logger, unit);
 }
 
-async function acknowledge(action, config, logger) {
-  return postActionToApi(action, {}, config, logger);
+async function acknowledge(job, action, config, logger) {
+  return postActionToApi({
+    ...(action || {}),
+    queueId: String(job?.id || ""),
+    claimToken: String(job?.claimToken || ""),
+    unit: String(job?.unit || config.botUnit || ""),
+  }, {}, config, logger);
+}
+
+function channelsFor(job, config) {
+  return publicationChannelsForUnit(job?.unit || config.botUnit);
+}
+
+function requireChannel(job, config, key, envName) {
+  const id = String(channelsFor(job, config)[key] || "").trim();
+  if (!id) {
+    throw Object.assign(new Error(`Не задан Discord-канал (${envName}) для ${job?.unit || config.botUnit}`), {
+      code: "MISSING_PUBLICATION_CHANNEL",
+    });
+  }
+  return id;
+}
+
+export async function preflightPublicationChannels(client, config, logger) {
+  const channels = publicationChannelsForUnit(config.botUnit);
+  const required = [
+    ["cases", "CASES_CHANNEL_ID"], ["roster", "ROSTER_CHANNEL_ID"],
+    ["report", "REPORT_CHANNEL_ID"], ["pgskoReports", "PGSKO_REPORT_CHANNEL_ID"],
+    ["actReview", "ACT_REVIEW_CHANNEL_ID"], ["discipline", "DISCIPLINE_CHANNEL_ID"],
+    ["ksoTasks", "KSO_TASKS_CHANNEL_ID"],
+  ];
+  const permissions = [
+    ["ViewChannel", "ViewChannel"],
+    ["ReadMessageHistory", "ReadMessageHistory"],
+    ["SendMessages", "SendMessages"],
+    ["EmbedLinks", "EmbedLinks"],
+    ["AddReactions", "AddReactions"],
+  ];
+  for (const [key, envName] of required) {
+    const channelId = String(channels[key] || "").trim();
+    if (!channelId) {
+      logger.error("Канал публикации не настроен", { unit: config.botUnit, channel: key, envName });
+      continue;
+    }
+    try {
+      const channel = await client.channels.fetch(channelId);
+      const ownPermissions = channel?.permissionsFor?.(client.user);
+      const missing = ownPermissions
+        ? permissions.filter(([flag]) => !ownPermissions.has(flag)).map(([, name]) => name)
+        : [];
+      if (missing.length) logger.error("Боту не хватает прав в канале публикации", { channelId, channel: key, missing });
+    } catch (error) {
+      logger.error("Канал публикации недоступен", { channelId, channel: key, error: error.message });
+    }
+  }
 }
 
 async function publishCase(client, job, config, logger) {
-  const channel = await client.channels.fetch(CHANNELS.cases);
-  const msg = buildCaseMessage({ status: job.status, caseNumber: job.caseNumber, investigator: job.investigator, docUrl: job.docUrl });
+  const channelId = requireChannel(job, config, "cases", "CASES_CHANNEL_ID");
+  const channel = await client.channels.fetch(channelId);
+  const msg = buildCaseMessage({
+    status: job.status,
+    caseNumber: job.caseNumber,
+    investigator: job.investigator,
+    docUrl: job.docUrl,
+    unit: job.unit,
+  });
   if (!msg) {
     logger.warn("Статус дела не публикуется", { status: job.status, caseNumber: job.caseNumber });
-    await acknowledge(
-      { type: "case_published", queueId: job.id, unit: job.unit || "", messageId: "", caseNumber: job.caseNumber, status: job.status },
-      config, logger,
-    );
+    await acknowledge(job, {
+      type: "case_published", messageId: "", channelId, caseNumber: job.caseNumber,
+      status: job.status, outcome: "not_publishable",
+    }, config, logger);
     return;
   }
-  const sent = await channel.send(msg);
-  logger.info("Дело опубликовано в дела-ск", { caseNumber: job.caseNumber, status: job.status, messageId: sent.id });
-  await acknowledge(
-    { type: "case_published", queueId: job.id, unit: job.unit || "", messageId: sent.id, caseNumber: job.caseNumber, status: job.status },
-    config, logger,
-  );
+  const result = await publishOnce(channel, client.user?.id, job, msg);
+  const sent = result.message;
+  logger.info("Дело синхронизировано в дела-ск", {
+    caseNumber: job.caseNumber, status: job.status, messageId: sent.id, reused: result.reused,
+  });
+  await acknowledge(job, {
+    type: "case_published", messageId: sent.id, channelId: sent.channelId || channelId,
+    caseNumber: job.caseNumber, status: job.status,
+  }, config, logger);
 }
 
 // Физическое удаление дела на портале должно убрать и связанные публикации
 // в «дела-ск». Канал берётся только из локальной конфигурации бота: сохранённый
 // порталом channelId используется для сверки, но никогда не позволяет удалить
 // сообщение в произвольном Discord-канале.
-async function deleteCasePublications(client, job, config, logger) {
-  const channelId = String(CHANNELS.cases || "").trim();
-  if (!channelId) throw new Error("Не задан канал дел (CASE_CHANNEL_ID)");
-  const channel = await client.channels.fetch(channelId);
+export async function deleteCasePublications(client, job, config, logger) {
+  const allowedChannelIds = casePublicationChannelIds(job.unit || config.botUnit);
+  if (!allowedChannelIds.length) throw new Error("Не задан канал дел (CASES_CHANNEL_ID)");
+  const primaryChannelId = allowedChannelIds[0];
   const publications = Array.isArray(job.publications) ? job.publications : [];
-  const messageIds = [...new Set(publications.map((publication) => {
+  const byChannel = new Map(allowedChannelIds.map((id) => [id, new Set()]));
+  for (const publication of publications) {
     const storedChannelId = String(publication?.channelId || "").trim();
-    if (storedChannelId && storedChannelId !== channelId) {
-      logger.warn("Публикация дела относится к другому каналу и пропущена", {
-        messageId: String(publication?.messageId || ""),
-        channelId: storedChannelId,
+    if (storedChannelId && !byChannel.has(storedChannelId)) {
+      throw Object.assign(new Error(`Канал старой публикации ${storedChannelId} не входит в CASES_LEGACY_CHANNEL_IDS`), {
+        code: "UNTRUSTED_PUBLICATION_CHANNEL",
       });
-      return "";
     }
-    return String(publication?.messageId || "").trim();
-  }).filter(Boolean))];
+    const messageId = String(publication?.messageId || "").trim();
+    if (messageId) byChannel.get(storedChannelId || primaryChannelId).add(messageId);
+  }
+
+  const publicationJobs = Array.isArray(job.publicationJobs) ? job.publicationJobs : [];
+  const channels = new Map();
+  for (const channelId of allowedChannelIds) {
+    channels.set(channelId, await client.channels.fetch(channelId));
+  }
+  // An in-flight case send may not have ACKed and therefore has no stored
+  // message ID. Its queue marker still lets deletion find it safely.
+  for (const publicationJob of publicationJobs) {
+    for (const [channelId, channel] of channels) {
+      const marked = await findPublicationMessages(channel, client.user?.id, publicationJob);
+      for (const message of marked) byChannel.get(channelId).add(String(message.id));
+    }
+  }
 
   let deleted = 0;
   let missing = 0;
-  for (const id of messageIds) {
+  const messageIds = [];
+  for (const [channelId, ids] of byChannel) {
+    const channel = channels.get(channelId);
+    for (const id of ids) {
+      messageIds.push(id);
     let message;
     try {
       message = await channel.messages.fetch(id);
@@ -187,6 +264,7 @@ async function deleteCasePublications(client, job, config, logger) {
       if (String(error?.code || "") !== "10008") throw error;
       missing += 1;
     }
+    }
   }
 
   logger.info("Публикации удалённого дела очищены", {
@@ -194,10 +272,8 @@ async function deleteCasePublications(client, job, config, logger) {
     deleted,
     missing,
   });
-  await acknowledge({
+  await acknowledge(job, {
     type: "case_publications_deleted",
-    queueId: job.id,
-    unit: job.unit || "",
     messageIds,
     deletedCount: deleted,
     missingCount: missing,
@@ -205,11 +281,10 @@ async function deleteCasePublications(client, job, config, logger) {
 }
 
 async function publishRoster(client, job, rosterMessageIds, config, logger) {
-  const channel = await client.channels.fetch(CHANNELS.roster);
+  const channel = await client.channels.fetch(requireChannel(job, config, "roster", "ROSTER_CHANNEL_ID"));
   const guild = channel.guild;
-  await ensureGuildMembers(guild, logger);
 
-  const messages = buildRosterMessages(job.roster || [], guild);
+  const messages = buildRosterMessages(job.roster || [], guild, { unit: job.unit || config.botUnit });
   const result = await reconcileRosterMessages(channel, client.user?.id, messages, rosterMessageIds);
   logger.info("Состав синхронизирован в состав-ск", {
     messages: result.messageIds.length,
@@ -217,10 +292,8 @@ async function publishRoster(client, job, rosterMessageIds, config, logger) {
     edited: result.edited,
     deletedDuplicates: result.deletedDuplicates,
   });
-  await acknowledge({
+  await acknowledge(job, {
     type: "roster_published",
-    queueId: job.id,
-    unit: job.unit || "",
     messageIds: result.messageIds,
   }, config, logger);
 }
@@ -231,8 +304,8 @@ async function publishRoster(client, job, rosterMessageIds, config, logger) {
 // Ошибки "Unknown Message" считаются успешным результатом: карточка уже могла
 // быть удалена вручную в Discord.
 async function deleteRosterPublications(client, job, config, logger) {
-  const channel = await client.channels.fetch(CHANNELS.roster);
-  const payloads = buildRosterMessages([], channel.guild);
+  const channel = await client.channels.fetch(requireChannel(job, config, "roster", "ROSTER_CHANNEL_ID"));
+  const payloads = buildRosterMessages([], channel.guild, { unit: job.unit || config.botUnit });
   const result = await deleteRosterMessages(
     channel,
     client.user?.id,
@@ -247,10 +320,8 @@ async function deleteRosterPublications(client, job, config, logger) {
     deleted: result.deleted,
     purge: !!job.purge,
   });
-  await acknowledge({
+  await acknowledge(job, {
     type: "roster_deleted",
-    queueId: job.id,
-    unit: job.unit || "",
     messageIds,
     discoveredCount: messageIds.length,
     deletedCount: result.deleted,
@@ -258,39 +329,27 @@ async function deleteRosterPublications(client, job, config, logger) {
 }
 
 async function publishReport(client, job, config, logger) {
-  if (!CHANNELS.report) {
-    logger.warn("Канал отчёта не задан (REPORT_CHANNEL_ID) — отчёт пропущен");
-    await acknowledge({ type: "report_published", queueId: job.id, messageId: "" }, config, logger);
-    return;
-  }
-  const channel = await client.channels.fetch(CHANNELS.report);
-  const sent = await channel.send(buildReportMessage(job));
-  logger.info("Еженедельный отчёт опубликован", { messageId: sent.id, period: job.period });
-  await acknowledge({ type: "report_published", queueId: job.id, messageId: sent.id }, config, logger);
+  const channelId = requireChannel(job, config, "report", "REPORT_CHANNEL_ID");
+  const channel = await client.channels.fetch(channelId);
+  const result = await publishOnce(channel, client.user?.id, job, buildReportMessage(job));
+  const sent = result.message;
+  logger.info("Еженедельный отчёт синхронизирован", { messageId: sent.id, period: job.period, reused: result.reused });
+  await acknowledge(job, { type: "report_published", messageId: sent.id, channelId: sent.channelId || channelId }, config, logger);
 }
 
 async function publishPgSkOReport(client, job, config, logger) {
-  if (!CHANNELS.pgskoReports) {
-    logger.warn("Канал ПГСкО-отчётов не задан (PGSKO_REPORT_CHANNEL_ID) — публикация пропущена", {
-      reportId: job.reportId,
-    });
-    await acknowledge(
-      { type: "pgsko_published", queueId: job.id, unit: job.unit || "", reportId: job.reportId || "", messageId: "", messageUrl: "" },
-      config, logger,
-    );
-    return;
-  }
-  const channel = await client.channels.fetch(CHANNELS.pgskoReports);
-  const sent = await channel.send(buildPgSkOMessage(job));
+  const channelId = requireChannel(job, config, "pgskoReports", "PGSKO_REPORT_CHANNEL_ID");
+  const channel = await client.channels.fetch(channelId);
+  const result = await publishOnce(channel, client.user?.id, job, buildPgSkOMessage(job));
+  const sent = result.message;
   const messageUrl = `https://discord.com/channels/${sent.guildId}/${sent.channelId}/${sent.id}`;
-  logger.info("Отчёт ПГСкО опубликован", { reportId: job.reportId, messageId: sent.id });
-  await acknowledge(
+  logger.info("Отчёт ПГСкО синхронизирован", { reportId: job.reportId, messageId: sent.id, reused: result.reused });
+  await acknowledge(job,
     {
       type: "pgsko_published",
-      queueId: job.id,
-      unit: job.unit || "",
       reportId: job.reportId || "",
       messageId: sent.id,
+      channelId: sent.channelId || channelId,
       messageUrl,
     },
     config, logger,
@@ -298,69 +357,78 @@ async function publishPgSkOReport(client, job, config, logger) {
 }
 
 async function publishActReview(client, job, config, logger) {
-  if (!CHANNELS.actReview) {
-    logger.warn("Канал «акты-и-делоодобрение» не задан (ACT_REVIEW_CHANNEL_ID) — пропуск", { actId: job.actId });
-    await acknowledge({ type: "act_review_published", queueId: job.id, unit: job.unit || "", actId: job.actId || "", messageId: "" }, config, logger);
-    return;
-  }
-  const channel = await client.channels.fetch(CHANNELS.actReview);
-  const sent = await channel.send(buildActReviewMessage(job));
-  logger.info("Акт отправлен на рассмотрение в акты-и-делоодобрение", { actId: job.actId, caseNumber: job.caseNumber, messageId: sent.id });
-  await acknowledge(
-    { type: "act_review_published", queueId: job.id, unit: job.unit || "", actId: job.actId || "", messageId: sent.id },
+  const channelId = requireChannel(job, config, "actReview", "ACT_REVIEW_CHANNEL_ID");
+  const channel = await client.channels.fetch(channelId);
+  const result = await publishOnce(channel, client.user?.id, job, buildActReviewMessage(job));
+  const sent = result.message;
+  logger.info("Акт синхронизирован в акты-и-делоодобрение", {
+    actId: job.actId, caseNumber: job.caseNumber, messageId: sent.id, reused: result.reused,
+  });
+  await acknowledge(job,
+    { type: "act_review_published", actId: job.actId || "", messageId: sent.id, channelId: sent.channelId || channelId },
     config, logger,
   );
 }
 
 // Решение по акту принято на сайте → редактируем карточку в «акты-и-делоодобрение».
-async function editActDecision(client, job, config, logger) {
-  if (!CHANNELS.actReview || !job.messageId) {
-    await acknowledge({ type: "act_decided_done", queueId: job.id, unit: job.unit || "", actId: job.actId || "" }, config, logger);
-    return;
-  }
-  try {
-    const channel = await client.channels.fetch(CHANNELS.actReview);
-    const message = await channel.messages.fetch(job.messageId).catch(() => null);
-    if (message) {
-      await message.edit(buildActDecisionEdit(job));
-      logger.info("Карточка акта обновлена решением", { actId: job.actId, decision: job.decision || job.status });
+export async function editActDecision(client, job, config, logger) {
+  const channel = await client.channels.fetch(requireChannel(job, config, "actReview", "ACT_REVIEW_CHANNEL_ID"));
+  let message = null;
+  if (job.messageId) {
+    try {
+      message = await channel.messages.fetch(job.messageId);
+    } catch (error) {
+      if (String(error?.code || "") !== "10008") throw error;
     }
-  } catch (error) {
-    logger.error("Не удалось обновить карточку акта", { error: error.message, actId: job.actId });
   }
-  await acknowledge({ type: "act_decided_done", queueId: job.id, unit: job.unit || "", actId: job.actId || "" }, config, logger);
+  if (!message && job.publicationQueueId) {
+    [message] = await findPublicationMessages(channel, client.user?.id, {
+      id: job.publicationQueueId,
+      createdAt: job.publicationCreatedAt,
+    });
+  }
+  if (!message) {
+    throw Object.assign(new Error(`Карточка акта ${job.actId || ""} ещё не опубликована`), {
+      code: "ACT_PUBLICATION_NOT_READY",
+    });
+  }
+  const originalQueueId = job.publicationQueueId || publicationQueueIdFromMessage(message);
+  const payload = originalQueueId
+    ? withPublicationMarker(buildActDecisionEdit(job), originalQueueId)
+    : buildActDecisionEdit(job);
+  await message.edit(payload);
+  logger.info("Карточка акта обновлена решением", { actId: job.actId, decision: job.decision || job.status });
+  await acknowledge(job, { type: "act_decided_done", actId: job.actId || "" }, config, logger);
 }
 
 // Дисциплинарное взыскание выдано/снято на сайте → публикуем уведомление в канал взысканий.
 async function publishDiscipline(client, job, config, logger) {
-  if (!CHANNELS.discipline) {
-    logger.warn("Канал взысканий не задан (DISCIPLINE_CHANNEL_ID) — пропуск", { recordId: job.recordId });
-    await acknowledge({ type: "discipline_published", queueId: job.id, unit: job.unit || "" }, config, logger);
-    return;
-  }
-  const channel = await client.channels.fetch(CHANNELS.discipline);
-  const sent = await channel.send(buildDisciplineMessage(job));
-  logger.info("Взыскание опубликовано", { recordId: job.recordId, action: job.action, type: job.type, messageId: sent.id });
-  await acknowledge({ type: "discipline_published", queueId: job.id, unit: job.unit || "", messageId: sent.id }, config, logger);
+  const channelId = requireChannel(job, config, "discipline", "DISCIPLINE_CHANNEL_ID");
+  const channel = await client.channels.fetch(channelId);
+  const result = await publishOnce(channel, client.user?.id, job, buildDisciplineMessage(job));
+  const sent = result.message;
+  logger.info("Взыскание синхронизировано", {
+    recordId: job.recordId, action: job.action, type: job.type, messageId: sent.id, reused: result.reused,
+  });
+  await acknowledge(job, { type: "discipline_published", messageId: sent.id, channelId: sent.channelId || channelId }, config, logger);
 }
 
 async function publishKsoAssignment(client, job, config, logger) {
-  if (!CHANNELS.ksoTasks) {
-    throw new Error("Не задан канал задач КСУ (KSO_TASKS_CHANNEL_ID)");
-  }
-  const channel = await client.channels.fetch(CHANNELS.ksoTasks);
-  const sent = await channel.send(buildKsoAssignmentMessage(job));
-  logger.info("Уведомление КСУ опубликовано", {
+  const channelId = requireChannel(job, config, "ksoTasks", "KSO_TASKS_CHANNEL_ID");
+  const channel = await client.channels.fetch(channelId);
+  const result = await publishOnce(channel, client.user?.id, job, buildKsoAssignmentMessage(job));
+  const sent = result.message;
+  logger.info("Уведомление КСУ синхронизировано", {
     supervisionId: job.supervisionId,
     kind: job.kind,
     messageId: sent.id,
+    reused: result.reused,
   });
-  await acknowledge({
+  await acknowledge(job, {
     type: "kso_assignment_published",
-    queueId: job.id,
-    unit: job.unit || "",
     supervisionId: job.supervisionId || "",
     messageId: sent.id,
+    channelId: sent.channelId || channelId,
   }, config, logger);
 }
 
@@ -369,16 +437,25 @@ export async function handleArchiveReaction(reaction, user, config, logger) {
   try {
     if (user.bot) return;
     if (reaction.partial) await reaction.fetch();
-    const message = reaction.message;
-    if (message.channelId !== CHANNELS.cases) return;
+    const message = reaction.message.partial ? await reaction.message.fetch() : reaction.message;
+    const channels = publicationChannelsForUnit(config.botUnit);
+    if (message.channelId !== channels.cases) return;
     if (reaction.emoji.name !== ARCHIVE_EMOJI) return;
 
-    if (ARCHIVE_REQUIRE_PROSECUTOR && PROSECUTOR_ROLE_ID) {
-      const member = await message.guild.members.fetch(user.id).catch(() => null);
-      if (!member || !member.roles.cache.has(PROSECUTOR_ROLE_ID)) return; // ✅ не от прокуратуры
+    const prosecutorRoleId = prosecutorRoleIdForUnit(config.botUnit);
+    if (!prosecutorRoleId) {
+      logger.warn("Реакция архивации проигнорирована: не задан PROSECUTOR_ROLE_ID", { messageId: message.id });
+      return;
     }
+    const member = await message.guild.members.fetch(user.id).catch(() => null);
+    if (!member || !member.roles.cache.has(prosecutorRoleId)) return; // ✅ не от прокуратуры
     logger.info("Реакция ✅ на деле — архивирую", { messageId: message.id });
-    await acknowledge({ type: "archive_case_by_message", messageId: message.id }, config, logger);
+    await postActionToApi({
+      type: "archive_case_by_message",
+      unit: config.botUnit,
+      messageId: message.id,
+      publicationQueueId: publicationQueueIdFromMessage(message),
+    }, {}, config, logger);
   } catch (error) {
     logger.error("Ошибка обработки реакции архивации", { error: error.message });
   }
@@ -388,31 +465,35 @@ export async function handleArchiveReaction(reaction, user, config, logger) {
 export async function handlePgSkOReaction(reaction, user, config, logger) {
   try {
     if (user.bot) return;
-    if (!CHANNELS.pgskoReports) return;
+    const channels = publicationChannelsForUnit(config.botUnit);
+    if (!channels.pgskoReports) return;
     if (reaction.partial) await reaction.fetch();
     const message = reaction.message.partial ? await reaction.message.fetch() : reaction.message;
-    if (message.channelId !== CHANNELS.pgskoReports) return;
+    if (message.channelId !== channels.pgskoReports) return;
     if (reaction.emoji.name !== PGSKO_APPROVE_EMOJI) return;
 
     const member = await message.guild.members.fetch(user.id).catch(() => null);
-    if (!PGSKO_APPROVER_ROLE_ID) {
+    const approverRoleId = pgskoApproverRoleIdForUnit(config.botUnit);
+    if (!approverRoleId) {
       logger.warn("Реакция ПГСкО проигнорирована: не задан PGSKO_APPROVER_ROLE_ID", { messageId: message.id });
       return;
     }
-    if (!member || !member.roles.cache.has(PGSKO_APPROVER_ROLE_ID)) return;
+    if (!member || !member.roles.cache.has(approverRoleId)) return;
 
     logger.info("Реакция ✅ на отчёте ПГСкО — засчитываю", {
       messageId: message.id,
       approvedBy: member?.displayName || user.username,
     });
-    await acknowledge(
+    await postActionToApi(
       {
         type: "approve_pgsko_by_message",
+        unit: config.botUnit,
         messageId: message.id,
+        publicationQueueId: publicationQueueIdFromMessage(message),
         approvedById: user.id,
         approvedByName: member?.displayName || user.username,
       },
-      config, logger,
+      {}, config, logger,
     );
   } catch (error) {
     logger.error("Ошибка обработки реакции ПГСкО", { error: error.message });
