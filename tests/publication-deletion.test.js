@@ -11,4 +11,6 @@ test("publisher supports safe deletion jobs from the portal", () => {
   assert.match(publisher, /storedChannelId !== channelId/);
   assert.match(publisher, /type: "case_publications_deleted"/);
   assert.match(publisher, /discoveredCount: messageIds\.length/);
+  assert.match(publisher, /if \(polling\) return/);
+  assert.doesNotMatch(publisher, /channel\.messages\.fetch\(id\)\.catch\(\(\) => null\)/);
 });

@@ -61,6 +61,7 @@ npm start
 | `BOT_API_URL` | endpoint сайта, обычно `https://sledak-rmrp.ru/api/bot` |
 | `BOT_API_SECRET` | общий секрет с Vercel-переменной портала; **обязателен** |
 | `BOT_UNIT` | управление этого экземпляра бота: `arbat`, `rublevka`, `patriki`, `tverskoy`, `kutuzovsky` или `ca`; **обязателен** |
+| `APP_RELEASE` | SHA реально развёрнутого коммита; выводится в стартовом логе для проверки версии |
 | `REPORT_CHANNEL_ID` | ID канала еженедельного отчёта |
 | `PGSKO_REPORT_CHANNEL_ID` | ID канала проверки отчётов ПГСкО |
 | `ACT_REVIEW_CHANNEL_ID` | ID канала «акты-и-делоодобрение» |
