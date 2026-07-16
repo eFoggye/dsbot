@@ -70,6 +70,8 @@ async function pollOnce(client, config, logger) {
     try {
       if (job.type === "case") {
         await publishCase(client, job, config, logger);
+      } else if (job.type === "case_publications_delete") {
+        await deleteCasePublications(client, job, config, logger);
       } else if (job.type === "roster") {
         const idsByUnit = queue.rosterMessageIdsByUnit || {};
         // Ответ API уже отфильтрован по BOT_UNIT, поэтому прямой список —
@@ -127,6 +129,61 @@ async function publishCase(client, job, config, logger) {
   );
 }
 
+// Физическое удаление дела на портале должно убрать и связанные публикации
+// в «дела-ск». Канал берётся только из локальной конфигурации бота: сохранённый
+// порталом channelId используется для сверки, но никогда не позволяет удалить
+// сообщение в произвольном Discord-канале.
+async function deleteCasePublications(client, job, config, logger) {
+  const channelId = String(CHANNELS.cases || "").trim();
+  if (!channelId) throw new Error("Не задан канал дел (CASE_CHANNEL_ID)");
+  const channel = await client.channels.fetch(channelId);
+  const publications = Array.isArray(job.publications) ? job.publications : [];
+  const messageIds = [...new Set(publications.map((publication) => {
+    const storedChannelId = String(publication?.channelId || "").trim();
+    if (storedChannelId && storedChannelId !== channelId) {
+      logger.warn("Публикация дела относится к другому каналу и пропущена", {
+        messageId: String(publication?.messageId || ""),
+        channelId: storedChannelId,
+      });
+      return "";
+    }
+    return String(publication?.messageId || "").trim();
+  }).filter(Boolean))];
+
+  let deleted = 0;
+  let missing = 0;
+  for (const id of messageIds) {
+    const message = await channel.messages.fetch(id).catch(() => null);
+    if (!message) {
+      missing += 1;
+      continue;
+    }
+    if (message.author?.id !== client.user?.id) {
+      logger.warn("Удаление чужого сообщения в дела-ск заблокировано", { messageId: id });
+      continue;
+    }
+    await message.delete().catch((error) => {
+      const code = String(error?.code || "");
+      if (code !== "10008") throw error;
+    });
+    deleted += 1;
+  }
+
+  logger.info("Публикации удалённого дела очищены", {
+    requested: messageIds.length,
+    deleted,
+    missing,
+  });
+  await acknowledge({
+    type: "case_publications_deleted",
+    queueId: job.id,
+    unit: job.unit || "",
+    messageIds,
+    deletedCount: deleted,
+    missingCount: missing,
+  }, config, logger);
+}
+
 async function publishRoster(client, job, rosterMessageIds, config, logger) {
   const channel = await client.channels.fetch(CHANNELS.roster);
   const guild = channel.guild;
@@ -157,9 +214,11 @@ async function publishRoster(client, job, rosterMessageIds, config, logger) {
   await acknowledge({ type: "roster_published", queueId: job.id, unit: job.unit || "", messageIds: newIds }, config, logger);
 }
 
-// Удаляет только сообщения, ID которых портал ранее зафиксировал как публикации
-// состава этого бота. Ошибки "Unknown Message" считаются успешным результатом:
-// карточка уже могла быть удалена вручную в Discord.
+// Удаляет сохранённые публикации состава, а при purge дополнительно сканирует
+// канал и находит исторические дубли. Поэтому число messageIds от портала — это
+// лишь актуальный снимок, а не полный фактический счётчик сообщений в Discord.
+// Ошибки "Unknown Message" считаются успешным результатом: карточка уже могла
+// быть удалена вручную в Discord.
 async function deleteRosterPublications(client, job, config, logger) {
   const channel = await client.channels.fetch(CHANNELS.roster);
   const ids = new Set((job.messageIds || []).map(String).filter(Boolean));
@@ -192,7 +251,14 @@ async function deleteRosterPublications(client, job, config, logger) {
     deleted += 1;
   }
   logger.info("Карточки состава удалены по команде портала", { requested: messageIds.length, deleted, purge: !!job.purge });
-  await acknowledge({ type: "roster_deleted", queueId: job.id, unit: job.unit || "", messageIds }, config, logger);
+  await acknowledge({
+    type: "roster_deleted",
+    queueId: job.id,
+    unit: job.unit || "",
+    messageIds,
+    discoveredCount: messageIds.length,
+    deletedCount: deleted,
+  }, config, logger);
 }
 
 async function publishReport(client, job, config, logger) {
