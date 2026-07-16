@@ -7,6 +7,7 @@ import {
   reconcileRosterMessages,
   selectRosterMessageIds,
 } from "../src/publish/rosterReconciler.js";
+import { buildRosterMessages, DISCORD_EMBED_DESCRIPTION_LIMIT } from "../src/publish/rosterContent.js";
 
 function payload(title) {
   return { embeds: [{ title, description: "updated" }], allowedMentions: { parse: [] } };
@@ -50,7 +51,9 @@ function mockChannel(initial = []) {
           if (!message) throw Object.assign(new Error("Unknown Message"), { code: "10008" });
           return message;
         }
-        return mockCollection([...messagesById.values()]);
+        const ordered = [...messagesById.values()].sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+        const offset = arg?.before ? ordered.findIndex((message) => message.id === arg.before) + 1 : 0;
+        return mockCollection(ordered.slice(offset, offset + Number(arg?.limit || 100)));
       },
     },
     async send(next) {
@@ -145,4 +148,53 @@ test("a transient Discord read failure aborts reconciliation instead of creating
     /temporarily unavailable/,
   );
   assert.equal(channel.sent.length, 0);
+});
+
+test("full-history purge removes roster duplicates beyond the old 300-message boundary", async () => {
+  const old = Array.from({ length: 350 }, (_, index) => mockMessage(String(1000 + index), "A", {
+    createdTimestamp: 1000 + index,
+  }));
+  const channel = mockChannel(old);
+
+  const result = await deleteRosterMessages(channel, "bot", [payload("A")], [], { purge: true });
+
+  assert.equal(result.messageIds.length, 350);
+  assert.equal(result.deleted, 350);
+});
+
+test("large roster sections are split below Discord embed limits", () => {
+  const roster = Array.from({ length: 45 }, (_, index) => ({
+    fio: `Следователь Тестовый ${index}`,
+    discordId: String(100000000000000 + index),
+    rank: "Капитан",
+    position: "Следователь",
+    department: "Следственный отдел (СО)",
+    status: "Активен",
+    warnings: 0,
+    reprimands: 0,
+    joinedAt: "01.01.2026",
+  }));
+  const messages = buildRosterMessages(roster, null, { unit: "arbat" });
+  const investigation = messages.filter((message) => message.embeds[0].title.includes("Следственный отдел"));
+
+  assert.ok(investigation.length > 1);
+  assert.ok(messages.every((message) => message.embeds[0].description.length <= DISCORD_EMBED_DESCRIPTION_LIMIT));
+});
+
+test("roster mentions only a verified Discord id and never matches a mutable display name", () => {
+  const guild = {
+    members: {
+      cache: new Map([["attacker", { id: "999999999999999999", displayName: "Иванов Иван Иванович" }]]),
+    },
+  };
+  const withoutId = buildRosterMessages([{
+    fio: "Иванов Иван Иванович", position: "Следователь", department: "Следственный отдел (СО)", status: "Активен",
+  }], guild, { unit: "arbat" });
+  const withId = buildRosterMessages([{
+    fio: "Иванов Иван Иванович", discordId: "123456789012345678", position: "Следователь",
+    department: "Следственный отдел (СО)", status: "Активен",
+  }], guild, { unit: "arbat" });
+
+  assert.doesNotMatch(withoutId.map((item) => item.embeds[0].description).join("\n"), /<@999999999999999999>/);
+  assert.match(withId.map((item) => item.embeds[0].description).join("\n"), /<@123456789012345678>/);
 });

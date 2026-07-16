@@ -3,7 +3,7 @@
  * руководство проверяет доказательство и ставит ✅ для зачёта.
  */
 
-import { COAT_OF_ARMS_URL, EMBED_FOOTER, PGSKO_COLOR } from "./publishConfig.js";
+import { COAT_OF_ARMS_URL, PGSKO_COLOR, embedFooterForUnit } from "./publishConfig.js";
 
 function escapeMarkdown(text) {
   return String(text ?? "")
@@ -56,7 +56,7 @@ export function buildPgSkOMessage(job) {
         inline: false,
       },
     ],
-    footer: { text: `${EMBED_FOOTER}${reportId ? ` | ${reportId}` : ""}`, icon_url: COAT_OF_ARMS_URL },
+    footer: { text: `${embedFooterForUnit(job.unit)}${reportId ? ` | ${reportId}` : ""}`, icon_url: COAT_OF_ARMS_URL },
     timestamp: job.submittedAt ? new Date(job.submittedAt).toISOString() : new Date().toISOString(),
   };
 

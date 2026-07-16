@@ -8,29 +8,55 @@
 
 import { channelRules } from "../channelRules.js";
 
-// --- Каналы (ID берём из channelRules по ключу) ---
+// --- Каналы (ID берём из channelRules по ключу только для Арбата) ---
 function channelIdByKey(key) {
   const entry = Object.entries(channelRules).find(([, rule]) => rule.key === key);
   return entry ? entry[0] : "";
 }
-export const CHANNELS = {
-  cases: process.env.CASES_CHANNEL_ID?.trim() || channelIdByKey("sk_cases"),
-  roster: process.env.ROSTER_CHANNEL_ID?.trim() || channelIdByKey("staff"),
-  // Канал задач КСУ. Значение настраивается через env для тестовых серверов;
-  // fallback — боевой канал из утверждённого шаблона задач.
-  ksoTasks: process.env.KSO_TASKS_CHANNEL_ID?.trim() || "1450127497894166629",
-  // Канал еженедельного отчёта (доступ — руководитель + Егорыч). ⚠️ ВПИСАТЬ ID, когда канал создадут.
-  report: process.env.REPORT_CHANNEL_ID?.trim() || "",
-  // Канал проверяемых отчётов по ПГСкО. Если отдельный канал ещё не создан,
-  // можно временно не задавать — бот просто пометит публикацию как пропущенную.
-  pgskoReports: process.env.PGSKO_REPORT_CHANNEL_ID?.trim() || "",
-  // Канал «акты-и-делоодобрение»: уведомления о поданных на проверку актах по делам.
-  // Само одобрение/отклонение — в личном кабинете портала «Следак».
-  actReview: process.env.ACT_REVIEW_CHANNEL_ID?.trim() || "1498065990888718376",
-  // Канал дисциплинарных взысканий: уведомления о выданных/снятых предупреждениях и выговорах.
-  // Берём из channelRules (ключ discipline_audit) — переключается вместе с сервером.
-  discipline: process.env.DISCIPLINE_CHANNEL_ID?.trim() || channelIdByKey("discipline_audit"),
+const ARBAT_CHANNEL_DEFAULTS = {
+  cases: channelIdByKey("sk_cases"),
+  roster: channelIdByKey("staff"),
+  ksoTasks: "1450127497894166629",
+  report: "",
+  pgskoReports: "",
+  actReview: "1498065990888718376",
+  discipline: channelIdByKey("discipline_audit"),
 };
+
+const CHANNEL_ENV = {
+  cases: "CASES_CHANNEL_ID",
+  roster: "ROSTER_CHANNEL_ID",
+  ksoTasks: "KSO_TASKS_CHANNEL_ID",
+  report: "REPORT_CHANNEL_ID",
+  pgskoReports: "PGSKO_REPORT_CHANNEL_ID",
+  actReview: "ACT_REVIEW_CHANNEL_ID",
+  discipline: "DISCIPLINE_CHANNEL_ID",
+};
+
+function envValue(name) {
+  return String(process.env[name] || "").trim();
+}
+
+export function publicationChannelsForUnit(unit) {
+  const normalized = String(unit || "").trim().toLowerCase();
+  const prefix = normalized ? `${normalized.toUpperCase()}_` : "";
+  return Object.fromEntries(Object.entries(CHANNEL_ENV).map(([key, name]) => {
+    const explicit = envValue(`${prefix}${name}`) || envValue(name);
+    // Чужой экземпляр никогда молча не наследует боевые ID Арбата.
+    const fallback = normalized === "arbat" ? ARBAT_CHANNEL_DEFAULTS[key] : "";
+    return [key, explicit || fallback || ""];
+  }));
+}
+
+export const CHANNELS = publicationChannelsForUnit("arbat");
+
+export function casePublicationChannelIds(unit) {
+  const normalized = String(unit || "").trim().toLowerCase();
+  const primary = publicationChannelsForUnit(normalized).cases;
+  const extra = envValue(`${normalized.toUpperCase()}_CASES_LEGACY_CHANNEL_IDS`)
+    || envValue("CASES_LEGACY_CHANNEL_IDS");
+  return [...new Set([primary, ...extra.split(",").map((id) => id.trim())].filter(Boolean))];
+}
 
 // Цвет полосы embed карточки акта на рассмотрении (винно-бордовый).
 export const ACT_REVIEW_COLOR = 0x6e1018;
@@ -49,6 +75,12 @@ export const PGSKO_COLOR = 0x2f855a;
 export const PROSECUTOR_ROLE_NAME = "[🔒] Прокуратура г. Москвы и МО";
 export const PROSECUTOR_ROLE_ID = process.env.PROSECUTOR_ROLE_ID?.trim() || "1246729373541859348";
 
+export function prosecutorRoleIdForUnit(unit) {
+  const normalized = String(unit || "arbat").trim().toLowerCase() || "arbat";
+  const explicit = envValue(`${normalized.toUpperCase()}_PROSECUTOR_ROLE_ID`) || envValue("PROSECUTOR_ROLE_ID");
+  return explicit || (normalized === "arbat" ? "1246729373541859348" : "");
+}
+
 // --- Цвета полос embed по статусу дела (выверить пипеткой по примерам при обкатке) ---
 export const CASE_COLORS = {
   "Возбуждено": 0xF5C518, // 🟡 жёлтый
@@ -64,6 +96,15 @@ export const COAT_OF_ARMS_URL =
 
 export const EMBED_FOOTER = "© 2026 Следственный комитет | RMRP «Арбат»";
 
+export function embedFooterForUnit(unit) {
+  const normalized = String(unit || "arbat").trim().toLowerCase() || "arbat";
+  const explicit = envValue(`${normalized.toUpperCase()}_EMBED_FOOTER`) || envValue("EMBED_FOOTER");
+  if (explicit) return explicit;
+  return normalized === "arbat"
+    ? EMBED_FOOTER
+    : `© 2026 Следственный комитет | ${normalized.toUpperCase()}`;
+}
+
 // --- Архивация по реакции ✅ ---
 // Если PROSECUTOR_ROLE_ID задан — архивируем только когда ✅ поставил носитель роли.
 // Иначе принимаем любой ✅ (упрощённо).
@@ -74,6 +115,11 @@ export const ARCHIVE_REQUIRE_PROSECUTOR = Boolean(PROSECUTOR_ROLE_ID);
 // Без PGSKO_APPROVER_ROLE_ID реакции игнорируются: зачёт должен быть fail-closed.
 export const PGSKO_APPROVE_EMOJI = "✅";
 export const PGSKO_APPROVER_ROLE_ID = process.env.PGSKO_APPROVER_ROLE_ID?.trim() || "";
+
+export function pgskoApproverRoleIdForUnit(unit) {
+  const normalized = String(unit || "arbat").trim().toLowerCase() || "arbat";
+  return envValue(`${normalized.toUpperCase()}_PGSKO_APPROVER_ROLE_ID`) || envValue("PGSKO_APPROVER_ROLE_ID");
+}
 
 // === СОСТАВ ===
 // Один объект = один embed в канале «состав-ск».
@@ -157,6 +203,26 @@ export const RANK_EMOJI = {
   "Генерал-полковник": "<:gen_polk:1499539665315823778>",
 };
 
+function jsonMap(name) {
+  const raw = envValue(name);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    throw new Error(`${name} must be a JSON object`);
+  }
+}
+
+export function rankEmojiMapForUnit(unit) {
+  const normalized = String(unit || "arbat").trim().toLowerCase() || "arbat";
+  const explicit = {
+    ...jsonMap("RANK_EMOJI_JSON"),
+    ...jsonMap(`${normalized.toUpperCase()}_RANK_EMOJI_JSON`),
+  };
+  return normalized === "arbat" ? { ...RANK_EMOJI, ...explicit } : explicit;
+}
+
 // Role ID должностей для @упоминания роли в составе ("@[⚡] Должность").
 // Ключ — должность из таблицы (новые названия), значение — Discord role ID.
 // (Роли на сервере названы по-старому — сопоставлено по смыслу.)
@@ -180,6 +246,15 @@ export const POSITION_ROLE_IDS = {
   "Специалист по кадрам": "1421351411970478080",
   "Следователь отдела профессиональной подготовки": "1479578430876946496",
 };
+
+export function positionRoleIdsForUnit(unit) {
+  const normalized = String(unit || "arbat").trim().toLowerCase() || "arbat";
+  const explicit = {
+    ...jsonMap("POSITION_ROLE_IDS_JSON"),
+    ...jsonMap(`${normalized.toUpperCase()}_POSITION_ROLE_IDS_JSON`),
+  };
+  return normalized === "arbat" ? { ...POSITION_ROLE_IDS, ...explicit } : explicit;
+}
 
 export function positionEmoji(position) {
   const rule = POSITION_EMOJI_RULES.find((r) => r.match.test(String(position)));

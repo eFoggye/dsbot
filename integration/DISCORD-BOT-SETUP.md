@@ -21,7 +21,7 @@
 
 1. **OAuth2 → URL Generator**:
    - **Scopes:** `bot`;
-   - **Bot Permissions:** `View Channel`, `Read Message History`, `Send Messages`, `Add Reactions`.
+   - **Bot Permissions:** `View Channel`, `Read Message History`, `Send Messages`, `Embed Links`, `Add Reactions`.
 2. Скопируй ссылку, открой, выбери сервер → добавь бота.
 
 Модераторские права (`Administrator`, `Manage Roles`, `Manage Messages`) не нужны.
@@ -46,7 +46,18 @@ docker compose up -d      # на сервере
 DISCORD_BOT_TOKEN=...
 BOT_API_URL=https://sledak-rmrp.ru/api/bot
 BOT_API_SECRET=...        # та же строка в Vercel-переменных сайта
+BOT_UNIT=arbat
+OCR_ENABLED=false
+APP_RELEASE=<полный SHA развёрнутого коммита>
+REPORT_CHANNEL_ID=...
+PGSKO_REPORT_CHANNEL_ID=...
+ACT_REVIEW_CHANNEL_ID=...
+DISCIPLINE_CHANNEL_ID=...
+KSO_TASKS_CHANNEL_ID=...
+CASES_CHANNEL_ID=...
+ROSTER_CHANNEL_ID=...
 PGSKO_APPROVER_ROLE_ID=... # роль руководства, чья ✅ засчитывает ПГСкО
+PROSECUTOR_ROLE_ID=...     # роль прокуратуры, чья ✅ архивирует дело
 ```
 
 ## Шаг 6. Проверка

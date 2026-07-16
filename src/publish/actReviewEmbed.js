@@ -5,7 +5,7 @@
  * происходит в личном кабинете портала «Следак», после чего карточка обновляется.
  */
 
-import { COAT_OF_ARMS_URL, EMBED_FOOTER, ACT_REVIEW_COLOR } from "./publishConfig.js";
+import { COAT_OF_ARMS_URL, ACT_REVIEW_COLOR, embedFooterForUnit } from "./publishConfig.js";
 
 function escapeMarkdown(text) {
   return String(text ?? "")
@@ -51,7 +51,7 @@ export function buildActReviewMessage(job) {
       { name: "Действие", value: actionLabel(job.action), inline: false },
       { name: "Документ", value: docText(job.docUrl), inline: false },
     ],
-    footer: { text: `${EMBED_FOOTER}${actId ? ` | ${actId}` : ""}`, icon_url: COAT_OF_ARMS_URL },
+    footer: { text: `${embedFooterForUnit(job.unit)}${actId ? ` | ${actId}` : ""}`, icon_url: COAT_OF_ARMS_URL },
     timestamp: job.submittedAt ? new Date(job.submittedAt).toISOString() : new Date().toISOString(),
   };
   if (job.comment) {
@@ -80,7 +80,7 @@ export function buildActDecisionEdit(job) {
       { name: "Документ", value: docText(job.docUrl), inline: false },
       { name: "Решение", value: `${approved ? "Одобрено" : "Отклонено"} — ${valueOrDash(job.decidedBy)}`, inline: false },
     ],
-    footer: { text: `${EMBED_FOOTER}${actId ? ` | ${actId}` : ""}`, icon_url: COAT_OF_ARMS_URL },
+    footer: { text: `${embedFooterForUnit(job.unit)}${actId ? ` | ${actId}` : ""}`, icon_url: COAT_OF_ARMS_URL },
     timestamp: new Date().toISOString(),
   };
   if (!approved && job.reason) {

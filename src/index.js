@@ -6,7 +6,12 @@ import { getChannelRule } from "./channelRules.js";
 import { createLogger } from "./logger.js";
 import { normalizeMessage } from "./messageNormalizer.js";
 import { saveMessageToFiles } from "./sinks/fileSink.js";
-import { postMessageEventToApi, postActionToApi, startApiRetryLoop } from "./sinks/botApiSink.js";
+import {
+  flushApiRetryQueue,
+  postMessageEventToApi,
+  postActionToApi,
+  startApiRetryLoop,
+} from "./sinks/botApiSink.js";
 import { recognizeOrder, orderActionsToSheetActions } from "./ocr/orderOcr.js";
 import { startPublisher, handleArchiveReaction, handlePgSkOReaction } from "./publish/publisher.js";
 
@@ -30,7 +35,10 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
-client.once(Events.ClientReady, (readyClient) => {
+let publisherController = null;
+let apiRetryController = null;
+
+client.once(Events.ClientReady, async (readyClient) => {
   logger.info("Discord listener started", {
     botUser: readyClient.user.tag,
     botUserId: readyClient.user.id,
@@ -43,10 +51,12 @@ client.once(Events.ClientReady, (readyClient) => {
     ignoreBots: config.ignoreBots,
     appRelease: config.appRelease,
   });
+  // Сначала досылаем старые ACK. Даже при crash/restart это не даёт свежему
+  // poll опередить локальный retry-хвост и повторно выдать уже завершённую job.
+  await flushApiRetryQueue(config, logger);
+  apiRetryController = startApiRetryLoop(config, logger, { flushImmediately: false });
   // Реверс-публикации (таблица → Discord): опрос очереди заданий.
-  startPublisher(readyClient, config, logger);
-  // Досылка событий, не доехавших до API (retry-queue.ndjson).
-  startApiRetryLoop(config, logger);
+  publisherController = startPublisher(readyClient, config, logger);
 });
 
 // Все обрабатываемые сообщения учитываем, чтобы при SIGTERM дождаться их
@@ -236,18 +246,24 @@ client.on(Events.Error, (error) => {
 // ждём завершения уже обрабатываемых сообщений (запись в файлы + доставка в API),
 // чтобы ничего не потерять. Максимум 10 секунд — потом выходим как есть
 // (недоставленное в API уже лежит в retry-очереди и доедет после рестарта).
-const SHUTDOWN_DRAIN_MS = 10_000;
+const SHUTDOWN_DRAIN_MS = 30_000;
 
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info("Shutting down", { signal, pendingMessages: inFlight.size });
   try {
-    client.destroy();
+    publisherController?.stop?.();
+    apiRetryController?.stop?.();
     await Promise.race([
-      Promise.allSettled(Array.from(inFlight)),
+      Promise.allSettled([
+        ...Array.from(inFlight),
+        publisherController?.drain?.(),
+      ].filter(Boolean)),
       sleep(SHUTDOWN_DRAIN_MS),
     ]);
+    await flushApiRetryQueue(config, logger);
+    client.destroy();
   } catch (error) {
     logger.error("Ошибка при остановке", { error: error?.message ?? String(error) });
   }
