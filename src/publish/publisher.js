@@ -72,8 +72,13 @@ async function pollOnce(client, config, logger) {
         await publishCase(client, job, config, logger);
       } else if (job.type === "roster") {
         const idsByUnit = queue.rosterMessageIdsByUnit || {};
-        const rosterIds = idsByUnit[job.unit || ""] || (job.unit ? [] : (queue.rosterMessageIds || []));
+        // Ответ API уже отфильтрован по BOT_UNIT, поэтому прямой список —
+        // актуальные ID именно этого бота. Раньше при непустом job.unit он
+        // ошибочно игнорировался, и каждый снимок создавал новые сообщения.
+        const rosterIds = idsByUnit[job.unit || ""] || queue.rosterMessageIds || [];
         await publishRoster(client, job, rosterIds, config, logger);
+      } else if (job.type === "roster_delete") {
+        await deleteRosterPublications(client, job, config, logger);
       } else if (job.type === "report") {
         await publishReport(client, job, config, logger);
       } else if (job.type === "pgsko_report") {
@@ -150,6 +155,44 @@ async function publishRoster(client, job, rosterMessageIds, config, logger) {
   }
   logger.info("Состав опубликован в состав-ск", { messages: newIds.length });
   await acknowledge({ type: "roster_published", queueId: job.id, unit: job.unit || "", messageIds: newIds }, config, logger);
+}
+
+// Удаляет только сообщения, ID которых портал ранее зафиксировал как публикации
+// состава этого бота. Ошибки "Unknown Message" считаются успешным результатом:
+// карточка уже могла быть удалена вручную в Discord.
+async function deleteRosterPublications(client, job, config, logger) {
+  const channel = await client.channels.fetch(CHANNELS.roster);
+  const ids = new Set((job.messageIds || []).map(String).filter(Boolean));
+  // По явной команде администратора убираем и исторические дубли, которые
+  // старые версии публикатора могли создать до сохранения корректных ID.
+  // Ограничение 300 сообщений/30 дней не позволяет превратить действие в
+  // неограниченную очистку канала.
+  if (job.purge) {
+    const after = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    let before = undefined;
+    for (let page = 0; page < 3; page += 1) {
+      const batch = await channel.messages.fetch({ limit: 100, before }).catch(() => null);
+      if (!batch?.size) break;
+      for (const message of batch.values()) {
+        if (message.author?.id === client.user?.id && message.createdTimestamp >= after) ids.add(message.id);
+      }
+      before = batch.last()?.id;
+      if (batch.size < 100 || !before) break;
+    }
+  }
+  const messageIds = [...ids];
+  let deleted = 0;
+  for (const id of messageIds) {
+    const message = await channel.messages.fetch(id).catch(() => null);
+    if (!message) continue;
+    await message.delete().catch((error) => {
+      const code = String(error?.code || "");
+      if (code !== "10008") throw error;
+    });
+    deleted += 1;
+  }
+  logger.info("Карточки состава удалены по команде портала", { requested: messageIds.length, deleted, purge: !!job.purge });
+  await acknowledge({ type: "roster_deleted", queueId: job.id, unit: job.unit || "", messageIds }, config, logger);
 }
 
 async function publishReport(client, job, config, logger) {
