@@ -64,6 +64,7 @@ export function loadConfig({ requireRuntime = true } = {}) {
   const botUnit = process.env.BOT_UNIT?.trim().toLowerCase() || "";
   const appRelease = process.env.APP_RELEASE?.trim() || process.env.RENDER_GIT_COMMIT?.trim() || "";
   const ocrEnabled = readBoolean(process.env.OCR_ENABLED, false);
+  const pgskoDiscordEnabled = readBoolean(process.env.PGSKO_DISCORD_ENABLED, false);
   const ocrApiKey = (process.env.OCR_API_KEY || process.env.ANTHROPIC_API_KEY)?.trim() ?? "";
 
   const errors = [];
@@ -106,6 +107,8 @@ export function loadConfig({ requireRuntime = true } = {}) {
     botUnit,
     // OCR fail-closed: наличие ключа само по себе не включает распознавание.
     ocrEnabled,
+    // Подача и одобрение ПГСкО по умолчанию остаются только на портале.
+    pgskoDiscordEnabled,
     ocrApiKey,
     ocrBaseUrl: process.env.OCR_BASE_URL?.trim() || "https://api.aitunnel.ru/v1",
     ocrModel: process.env.OCR_MODEL?.trim() || "claude-haiku-4.5",

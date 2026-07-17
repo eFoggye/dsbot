@@ -13,6 +13,7 @@ try {
   console.log(`API enabled: ${config.useApi ? "yes" : "no"}`);
   console.log(`Bot API URL: ${config.botApiUrl || "(не задан)"}`);
   console.log(`Guild members intent: ${config.enableGuildMembersIntent ? "yes" : "no"}`);
+  console.log(`PGSKO Discord: ${config.pgskoDiscordEnabled ? "enabled" : "disabled"}`);
   console.log(`Ignore bot messages: ${config.ignoreBots ? "yes" : "no"}`);
 } catch (error) {
   console.error(`Configuration error: ${error.message}`);

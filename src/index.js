@@ -46,6 +46,7 @@ client.once(Events.ClientReady, async (readyClient) => {
     outputDir: config.outputDir,
     apiEnabled: config.useApi,
     ocrEnabled: config.ocrEnabled,
+    pgskoDiscordEnabled: config.pgskoDiscordEnabled,
     storage: config.storage,
     guildMembersIntent: config.enableGuildMembersIntent,
     ignoreBots: config.ignoreBots,

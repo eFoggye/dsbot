@@ -63,10 +63,11 @@ npm start
 | `BOT_UNIT` | управление этого экземпляра бота: `arbat`, `rublevka`, `patriki`, `tverskoy`, `kutuzovsky` или `ca`; **обязателен** |
 | `APP_RELEASE` | SHA реально развёрнутого коммита; выводится в стартовом логе для проверки версии |
 | `REPORT_CHANNEL_ID` | ID канала еженедельного отчёта |
-| `PGSKO_REPORT_CHANNEL_ID` | ID канала проверки отчётов ПГСкО |
+| `PGSKO_DISCORD_ENABLED` | `false` по умолчанию: ПГСкО подаётся и проверяется только на портале |
+| `PGSKO_REPORT_CHANNEL_ID` | ID канала ПГСкО; используется только при `PGSKO_DISCORD_ENABLED=true` |
 | `ACT_REVIEW_CHANNEL_ID` | ID канала «акты-и-делоодобрение» |
 | `DISCIPLINE_CHANNEL_ID` | ID канала уведомлений о взысканиях |
-| `KSO_TASKS_CHANNEL_ID` | ID канала задач КСУ |
+| `KSO_TASKS_CHANNEL_ID` | ID канала задач КСУ только для экземпляра `BOT_UNIT=ca`; Арбату не задаётся |
 | `CASES_LEGACY_CHANNEL_IDS` | allowlist старых каналов дел для безопасной очистки после переноса |
 | `PGSKO_APPROVER_ROLE_ID` | ID роли, чья ✅ засчитывает ПГСкО; без него реакции игнорируются |
 | `PROSECUTOR_ROLE_ID` | ID роли прокуратуры (для публикаций и архивации по ✅) |
@@ -84,7 +85,7 @@ npm start
 
 `MessageContent` — привилегированный и включается в Developer Portal (Bot → Privileged Gateway Intents). `GuildMembers` необязателен: состав использует только подтверждённый Discord ID из портала, а не изменяемый ник.
 
-Права на каналах: `View Channel`, `Read Message History`, `Send Messages`, `Embed Links`, `Add Reactions`. Модераторские права (`Administrator`, `Manage Messages`, `Manage Roles`, `Ban`, `Kick`) не нужны. При старте бот проверяет доступность всех каналов и эти права.
+Права на используемых этим экземпляром каналах: `View Channel`, `Read Message History`, `Send Messages`, `Embed Links`, `Add Reactions`. Модераторские права (`Administrator`, `Manage Messages`, `Manage Roles`, `Ban`, `Kick`) не нужны. При старте бот проверяет только обязательные для своего управления и включённых функций каналы.
 
 Как создать бота, токен и включить интенты — в `integration/DISCORD-BOT-SETUP.md`.
 

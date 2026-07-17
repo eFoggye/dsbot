@@ -9,14 +9,18 @@ import {
 
 test("non-Arbat units never inherit Arbat publication channels, roles or emojis", () => {
   const keys = [
-    "CASES_CHANNEL_ID","TVERSKOY_CASES_CHANNEL_ID","POSITION_ROLE_IDS_JSON",
+    "CASES_CHANNEL_ID","TVERSKOY_CASES_CHANNEL_ID","CA_KSO_TASKS_CHANNEL_ID",
+    "POSITION_ROLE_IDS_JSON",
     "TVERSKOY_POSITION_ROLE_IDS_JSON","RANK_EMOJI_JSON","TVERSKOY_RANK_EMOJI_JSON",
   ];
   const previous = new Map(keys.map((key) => [key, process.env[key]]));
   keys.forEach((key) => delete process.env[key]);
   try {
     assert.ok(publicationChannelsForUnit("arbat").cases);
+    assert.equal(publicationChannelsForUnit("arbat").ksoTasks, "");
     assert.equal(publicationChannelsForUnit("tverskoy").cases, "");
+    process.env.CA_KSO_TASKS_CHANNEL_ID = "123456789012345678";
+    assert.equal(publicationChannelsForUnit("ca").ksoTasks, "123456789012345678");
     assert.deepEqual(positionRoleIdsForUnit("tverskoy"), {});
     assert.deepEqual(rankEmojiMapForUnit("tverskoy"), {});
   } finally {

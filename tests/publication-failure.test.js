@@ -62,3 +62,44 @@ test("an unknown publication job is explicitly NACKed", async () => {
     globalThis.fetch = previousFetch;
   }
 });
+
+test("disabled PGSKO Discord closes a stale job without fetching a channel", async () => {
+  const actions = [];
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.op === "queue") {
+      return {
+        ok: true,status: 200,
+        async json() {
+          return {
+            ok: true,
+            result: {
+              jobs: [{
+                id: "evt_pgsko",type: "pgsko_report",unit: "arbat",
+                reportId: "pgs_1",claimToken: "claim",
+              }],
+            },
+          };
+        },
+      };
+    }
+    actions.push(body.action);
+    return { ok: true,status: 200,async json() { return { ok: true,result: {} }; } };
+  };
+  try {
+    await pollOnce({
+      user: { id: "bot" },
+      channels: { async fetch() { throw new Error("PGSKO channel must not be fetched"); } },
+    }, {
+      botUnit: "arbat",useApi: true,botApiUrl: "https://portal.invalid/api/bot",
+      botApiSecret: "secret",httpTimeoutMs: 10,pgskoDiscordEnabled: false,
+    }, logger);
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0].type, "pgsko_discord_skipped");
+    assert.equal(actions[0].reportId, "pgs_1");
+    assert.equal(actions[0].claimToken, "claim");
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});

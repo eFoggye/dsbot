@@ -16,7 +16,8 @@ function channelIdByKey(key) {
 const ARBAT_CHANNEL_DEFAULTS = {
   cases: channelIdByKey("sk_cases"),
   roster: channelIdByKey("staff"),
-  ksoTasks: "1450127497894166629",
+  // КСУ находится на отдельном Discord-сервере ЦА и не наследуется Арбатом.
+  ksoTasks: "",
   report: "",
   pgskoReports: "",
   actReview: "1498065990888718376",

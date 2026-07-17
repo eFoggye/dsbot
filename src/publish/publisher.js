@@ -89,7 +89,8 @@ export async function pollOnce(client, config, logger) {
       } else if (job.type === "report") {
         await publishReport(client, job, config, logger);
       } else if (job.type === "pgsko_report") {
-        await publishPgSkOReport(client, job, config, logger);
+        if (config.pgskoDiscordEnabled) await publishPgSkOReport(client, job, config, logger);
+        else await skipPgSkODiscord(job, config, logger);
       } else if (job.type === "act_review") {
         await publishActReview(client, job, config, logger);
       } else if (job.type === "act_decided") {
@@ -141,10 +142,11 @@ export async function preflightPublicationChannels(client, config, logger) {
   const channels = publicationChannelsForUnit(config.botUnit);
   const required = [
     ["cases", "CASES_CHANNEL_ID"], ["roster", "ROSTER_CHANNEL_ID"],
-    ["report", "REPORT_CHANNEL_ID"], ["pgskoReports", "PGSKO_REPORT_CHANNEL_ID"],
-    ["actReview", "ACT_REVIEW_CHANNEL_ID"], ["discipline", "DISCIPLINE_CHANNEL_ID"],
-    ["ksoTasks", "KSO_TASKS_CHANNEL_ID"],
+    ["report", "REPORT_CHANNEL_ID"], ["actReview", "ACT_REVIEW_CHANNEL_ID"],
+    ["discipline", "DISCIPLINE_CHANNEL_ID"],
   ];
+  if (config.pgskoDiscordEnabled) required.push(["pgskoReports", "PGSKO_REPORT_CHANNEL_ID"]);
+  if (config.botUnit === "ca") required.push(["ksoTasks", "KSO_TASKS_CHANNEL_ID"]);
   const permissions = [
     ["ViewChannel", "ViewChannel"],
     ["ReadMessageHistory", "ReadMessageHistory"],
@@ -356,6 +358,16 @@ async function publishPgSkOReport(client, job, config, logger) {
   );
 }
 
+async function skipPgSkODiscord(job, config, logger) {
+  logger.info("Discord-публикация ПГСкО отключена; отчёт остаётся на портале", {
+    reportId: job.reportId || "",
+  });
+  await acknowledge(job, {
+    type: "pgsko_discord_skipped",
+    reportId: job.reportId || "",
+  }, config, logger);
+}
+
 async function publishActReview(client, job, config, logger) {
   const channelId = requireChannel(job, config, "actReview", "ACT_REVIEW_CHANNEL_ID");
   const channel = await client.channels.fetch(channelId);
@@ -464,6 +476,7 @@ export async function handleArchiveReaction(reaction, user, config, logger) {
 // Обработчик реакции ✅ в канале ПГСкО → зачёт отчёта в таблице.
 export async function handlePgSkOReaction(reaction, user, config, logger) {
   try {
+    if (!config.pgskoDiscordEnabled) return;
     if (user.bot) return;
     const channels = publicationChannelsForUnit(config.botUnit);
     if (!channels.pgskoReports) return;
