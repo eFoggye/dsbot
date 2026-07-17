@@ -213,7 +213,14 @@ export async function deleteCasePublications(client, job, config, logger) {
   const publications = Array.isArray(job.publications) ? job.publications : [];
   const byChannel = new Map(allowedChannelIds.map((id) => [id, new Set()]));
   for (const publication of publications) {
-    const storedChannelId = String(publication?.channelId || "").trim();
+    let storedChannelId = String(publication?.channelId || "").trim();
+    if (storedChannelId && !/^\d{17,20}$/.test(storedChannelId)) {
+      logger.warn("Некорректный legacy channelId проигнорирован; используется основной канал дел", {
+        storedChannelId,
+        jobId: job.id,
+      });
+      storedChannelId = "";
+    }
     if (storedChannelId && !byChannel.has(storedChannelId)) {
       throw Object.assign(new Error(`Канал старой публикации ${storedChannelId} не входит в CASES_LEGACY_CHANNEL_IDS`), {
         code: "UNTRUSTED_PUBLICATION_CHANNEL",
@@ -400,17 +407,27 @@ export async function editActDecision(client, job, config, logger) {
     });
   }
   if (!message) {
-    throw Object.assign(new Error(`Карточка акта ${job.actId || ""} ещё не опубликована`), {
-      code: "ACT_PUBLICATION_NOT_READY",
+    const recovered = await publishOnce(channel, client.user?.id, job, buildActDecisionEdit(job));
+    message = recovered.message;
+    logger.warn("Исходная карточка акта не найдена; создана итоговая карточка решения", {
+      actId: job.actId || "",
+      messageId: message.id,
+      reused: recovered.reused,
     });
+  } else {
+    const originalQueueId = job.publicationQueueId || publicationQueueIdFromMessage(message);
+    const payload = originalQueueId
+      ? withPublicationMarker(buildActDecisionEdit(job), originalQueueId)
+      : buildActDecisionEdit(job);
+    await message.edit(payload);
   }
-  const originalQueueId = job.publicationQueueId || publicationQueueIdFromMessage(message);
-  const payload = originalQueueId
-    ? withPublicationMarker(buildActDecisionEdit(job), originalQueueId)
-    : buildActDecisionEdit(job);
-  await message.edit(payload);
   logger.info("Карточка акта обновлена решением", { actId: job.actId, decision: job.decision || job.status });
-  await acknowledge(job, { type: "act_decided_done", actId: job.actId || "" }, config, logger);
+  await acknowledge(job, {
+    type: "act_decided_done",
+    actId: job.actId || "",
+    messageId: message.id,
+    channelId: message.channelId || channel.id || "",
+  }, config, logger);
 }
 
 // Дисциплинарное взыскание выдано/снято на сайте → публикуем уведомление в канал взысканий.

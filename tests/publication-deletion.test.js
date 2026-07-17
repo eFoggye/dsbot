@@ -86,6 +86,46 @@ test("case deletion refuses a portal-supplied channel outside the local allowlis
   }
 });
 
+test("case deletion treats a non-snowflake legacy channel as absent and stays in the local allowlist", async () => {
+  const previousChannel = process.env.CASES_CHANNEL_ID;
+  process.env.CASES_CHANNEL_ID = "123456789012345678";
+  const message = {
+    id: "987654321098765432",
+    author: { id: "bot" },
+    createdTimestamp: Date.now(),
+    content: "",
+    embeds: [],
+    deleted: false,
+    async delete() { this.deleted = true; },
+  };
+  const channel = caseChannel(message);
+  const client = { user: { id: "bot" }, channels: { async fetch() { return channel; } } };
+  let acknowledged;
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    acknowledged = JSON.parse(options.body);
+    return { ok: true, status: 200, async json() { return { ok: true, result: {} }; } };
+  };
+  try {
+    await deleteCasePublications(client, {
+      id: "evt_orphan_legacy",
+      claimToken: "claim-legacy",
+      unit: "arbat",
+      publications: [{ messageId: message.id, channelId: "it_channel" }],
+      publicationJobs: [],
+    }, {
+      botUnit: "arbat",useApi: true,botApiUrl: "https://portal.invalid/api/bot",
+      botApiSecret: "secret",httpTimeoutMs: 10,
+    }, logger);
+    assert.equal(message.deleted, true);
+    assert.equal(acknowledged.action.type, "case_publications_deleted");
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousChannel === undefined) delete process.env.CASES_CHANNEL_ID;
+    else process.env.CASES_CHANNEL_ID = previousChannel;
+  }
+});
+
 test("act decision without a materialized message id finds the review card marker and edits before ACK", async () => {
   const previousChannel = process.env.ACT_REVIEW_CHANNEL_ID;
   process.env.ACT_REVIEW_CHANNEL_ID = "222222222222222222";
@@ -125,6 +165,61 @@ test("act decision without a materialized message id finds the review card marke
     assert.equal(publicationQueueIdFromMessage(message), "evt_act_review");
     assert.equal(acknowledged.action.type, "act_decided_done");
     assert.equal(acknowledged.action.claimToken, "claim-decision");
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousChannel === undefined) delete process.env.ACT_REVIEW_CHANNEL_ID;
+    else process.env.ACT_REVIEW_CHANNEL_ID = previousChannel;
+  }
+});
+
+test("act decision materializes a final card when the original review card is irrecoverable", async () => {
+  const previousChannel = process.env.ACT_REVIEW_CHANNEL_ID;
+  process.env.ACT_REVIEW_CHANNEL_ID = "222222222222222222";
+  const sent = [];
+  const channel = {
+    id: "222222222222222222",
+    messages: {
+      async fetch(arg) {
+        if (typeof arg === "string") throw Object.assign(new Error("Unknown Message"), { code: "10008" });
+        return collection([]);
+      },
+    },
+    async send(payload) {
+      const message = {
+        id: "444444444444444444",
+        channelId: this.id,
+        author: { id: "bot" },
+        createdTimestamp: Date.now(),
+        content: payload.content || "",
+        embeds: payload.embeds || [],
+        async edit(next) { this.content = next.content || ""; this.embeds = next.embeds || []; return this; },
+      };
+      sent.push(message);
+      return message;
+    },
+  };
+  const client = { user: { id: "bot" }, channels: { async fetch() { return channel; } } };
+  let acknowledged;
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    acknowledged = JSON.parse(options.body);
+    return { ok: true, status: 200, async json() { return { ok: true, result: {} }; } };
+  };
+  try {
+    await editActDecision(client, {
+      id: "evt_act_decision_repair",claimToken: "claim-repair",unit: "arbat",actId: "act-legacy",
+      messageId: "",publicationQueueId: "",decision: "Одобрено",status: "Одобрено",
+      investigator: "Иванов",caseNumber: "02-СК-2",action: "Возбуждение",
+    }, {
+      botUnit: "arbat",useApi: true,botApiUrl: "https://portal.invalid/api/bot",
+      botApiSecret: "secret",httpTimeoutMs: 10,
+    }, logger);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].embeds[0].title, "✅ Акт одобрен");
+    assert.equal(publicationQueueIdFromMessage(sent[0]), "evt_act_decision_repair");
+    assert.equal(acknowledged.action.type, "act_decided_done");
+    assert.equal(acknowledged.action.messageId, sent[0].id);
+    assert.equal(acknowledged.action.channelId, channel.id);
   } finally {
     globalThis.fetch = previousFetch;
     if (previousChannel === undefined) delete process.env.ACT_REVIEW_CHANNEL_ID;
