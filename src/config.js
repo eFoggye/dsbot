@@ -115,6 +115,9 @@ export function loadConfig({ requireRuntime = true } = {}) {
     // Allowlist авторов для канала состава: если задан, сообщения/правки состава
     // принимаются только от этих Discord ID. Пусто = полагаемся на права канала.
     staffAllowedAuthorIds: parseIdSet(process.env.STAFF_ALLOWED_AUTHOR_IDS, "STAFF_ALLOWED_AUTHOR_IDS"),
+    // Сайт является источником истины по составу, Discord — только витриной.
+    // Обратный импорт включается лишь вручную для разовой контролируемой миграции.
+    staffImportEnabled: readBoolean(process.env.STAFF_IMPORT_ENABLED, false),
     enableGuildMembersIntent: readBoolean(process.env.DISCORD_ENABLE_GUILD_MEMBERS, false),
     ignoreBots: readBoolean(process.env.IGNORE_BOTS, true),
     logRawMessages: readBoolean(process.env.LOG_RAW_MESSAGES, false),

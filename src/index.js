@@ -50,6 +50,7 @@ client.once(Events.ClientReady, async (readyClient) => {
     storage: config.storage,
     guildMembersIntent: config.enableGuildMembersIntent,
     ignoreBots: config.ignoreBots,
+    staffImportEnabled: config.staffImportEnabled,
     appRelease: config.appRelease,
   });
   // Сначала досылаем старые ACK. Даже при crash/restart это не даёт свежему
@@ -106,6 +107,10 @@ function staffAuthorAllowed(message) {
   return config.staffAllowedAuthorIds.has(message.author?.id ?? "");
 }
 
+function staffImportAllowed(rule) {
+  return rule.key !== "staff" || config.staffImportEnabled;
+}
+
 async function deliverMessageEvent(event) {
   if (config.useApi) await postMessageEventToApi(event, config, logger);
 }
@@ -156,6 +161,7 @@ client.on(Events.MessageCreate, async (message) => {
 
   const rule = getChannelRule(message.channelId);
   if (rule.trigger === "reaction") return;
+  if (!staffImportAllowed(rule)) return;
 
   if (rule.key === "staff" && !staffAuthorAllowed(message)) {
     logger.warn("Сообщение состава от автора вне allowlist — пропуск", {
@@ -224,6 +230,7 @@ client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
 
     const rule = getChannelRule(message.channelId);
     if (rule.key !== "staff") return; // правки обрабатываем только для состава
+    if (!staffImportAllowed(rule)) return;
 
     if (!staffAuthorAllowed(message)) {
       logger.warn("Правка состава от автора вне allowlist — пропуск", {

@@ -68,3 +68,63 @@ test("queue polling advertises the lease protocol and deployed release", async (
     globalThis.fetch = previousFetch;
   }
 });
+
+test("disabled staff import removes a queued roster mutation without calling the API", async () => {
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "sledak-retry-staff-"));
+  const file = path.join(outputDir, "retry-queue.ndjson");
+  const entry = {
+    queuedAt: Date.now(),
+    body: {
+      op: "message_event",
+      event: {
+        receivedAt: new Date().toISOString(),
+        sheetAction: { type: "upsert_staff_rows", rows: [{ "ФИО": "Тест Тестович" }] },
+      },
+    },
+  };
+  await fs.writeFile(file, `${JSON.stringify(entry)}\n`);
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error("must not be called"); };
+  try {
+    await flushApiRetryQueue({
+      useApi: true,
+      outputDir,
+      botApiUrl: "https://portal.invalid/api/bot",
+      botApiSecret: "secret",
+      botUnit: "arbat",
+      staffImportEnabled: false,
+    }, logger);
+    assert.equal(await fs.readFile(file, "utf8"), "");
+    assert.equal(calls, 0);
+    const deadLetter = await fs.readFile(path.join(outputDir, "retry-dead-letter.ndjson"), "utf8");
+    assert.match(deadLetter, /staff_import_disabled/);
+  } finally {
+    globalThis.fetch = previousFetch;
+    await fs.rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("staff retry older than ten minutes is terminal even when import is enabled", async () => {
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "sledak-retry-stale-staff-"));
+  const file = path.join(outputDir, "retry-queue.ndjson");
+  const stale = new Date(Date.now() - 11 * 60 * 1000).toISOString();
+  await fs.writeFile(file, `${JSON.stringify({
+    queuedAt: Date.parse(stale),
+    body: { op: "message_event", event: { receivedAt: stale, sheetAction: { type: "upsert_staff_rows" } } },
+  })}\n`);
+  try {
+    await flushApiRetryQueue({
+      useApi: true,
+      outputDir,
+      botApiUrl: "https://portal.invalid/api/bot",
+      botApiSecret: "secret",
+      botUnit: "arbat",
+      staffImportEnabled: true,
+    }, logger);
+    assert.equal(await fs.readFile(file, "utf8"), "");
+    assert.match(await fs.readFile(path.join(outputDir, "retry-dead-letter.ndjson"), "utf8"), /stale_staff_import/);
+  } finally {
+    await fs.rm(outputDir, { recursive: true, force: true });
+  }
+});

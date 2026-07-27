@@ -38,6 +38,13 @@ const client = new Client({
 client.once(Events.ClientReady, async (readyClient) => {
   logger.info("Backfill started", { botUser: readyClient.user.tag, channels: targetChannelIds });
 
+  if (!config.staffImportEnabled) {
+    logger.error("Backfill состава запрещён: для разового импорта явно установи STAFF_IMPORT_ENABLED=true");
+    client.destroy();
+    process.exitCode = 1;
+    return;
+  }
+
   if (targetChannelIds.length === 0) {
     logger.warn("Нет целевых каналов. Укажи ID: npm run backfill -- <channelId>");
     client.destroy();

@@ -23,6 +23,7 @@ const RETRY_BASE_DELAY_MS = 1000; // 1с → 2с между попытками
 const RETRY_LOOP_INTERVAL_MS = 90_000;
 const FLUSH_BATCH_LIMIT = 8;   // за один проход шлём не больше — чтобы не превысить rate-limit API
 const FLUSH_GAP_MS = 800;      // пауза между отправками внутри пачки
+const STAFF_RETRY_MAX_AGE_MS = 10 * 60 * 1000;
 const TERMINAL_API_CODES = new Set(["STALE_CLAIM", "OUTBOX_NOT_FOUND", "UNIT_MISMATCH"]);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -111,6 +112,17 @@ function retryDeadLetterPath(config) {
   return path.join(config.outputDir, "retry-dead-letter.ndjson");
 }
 
+function staleStaffRetry(entry, config, now = Date.now()) {
+  const body = entry?.body;
+  if (body?.op !== "message_event" || body?.event?.sheetAction?.type !== "upsert_staff_rows") return "";
+  if (!config.staffImportEnabled) return "staff_import_disabled";
+  const receivedAt = Date.parse(String(body.event.receivedAt || ""));
+  const queuedAt = Number(entry.queuedAt || 0);
+  const eventAt = Number.isFinite(receivedAt) ? receivedAt : queuedAt;
+  if (!eventAt || now - eventAt > STAFF_RETRY_MAX_AGE_MS) return "stale_staff_import";
+  return "";
+}
+
 async function appendQueueLines(config, lines) {
   if (!lines.length) return;
   await fs.mkdir(config.outputDir, { recursive: true, mode: 0o700 });
@@ -159,6 +171,12 @@ export async function flushApiRetryQueue(config, logger) {
       if (!entry?.body) {
         dropped += 1;
         malformed.push(JSON.stringify({ movedAt: Date.now(), reason: "missing_body", entry }));
+        continue;
+      }
+      const staleReason = staleStaffRetry(entry, config);
+      if (staleReason) {
+        dropped += 1;
+        malformed.push(JSON.stringify({ movedAt: Date.now(), reason: staleReason, entry }));
         continue;
       }
       if (stop || budget <= 0) { // лимит пачки исчерпан или API упал — остальное на следующий цикл
