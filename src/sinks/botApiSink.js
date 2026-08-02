@@ -20,7 +20,6 @@ import path from "node:path";
 const RETRY_QUEUE_FILE = "retry-queue.ndjson";
 const RETRY_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 1000; // 1с → 2с между попытками
-const RETRY_LOOP_INTERVAL_MS = 90_000;
 const FLUSH_BATCH_LIMIT = 8;   // за один проход шлём не больше — чтобы не превысить rate-limit API
 const FLUSH_GAP_MS = 800;      // пауза между отправками внутри пачки
 const STAFF_RETRY_MAX_AGE_MS = 10 * 60 * 1000;
@@ -144,13 +143,13 @@ async function enqueueRetry(config, logger, body) {
 
 // Пробует дослать всё из очереди; недоставленное остаётся в файле.
 export async function flushApiRetryQueue(config, logger) {
-  if (flushing || !config.useApi) return;
+  if (flushing || !config.useApi) return { sent: 0, left: 0, dropped: 0, terminal: 0, failed: false };
   flushing = true;
   try {
     const file = retryQueuePath(config);
     const text = await fs.readFile(file, "utf8").catch(() => "");
     const lines = text.split("\n").filter(Boolean);
-    if (lines.length === 0) return;
+    if (lines.length === 0) return { sent: 0, left: 0, dropped: 0, terminal: 0, failed: false };
 
     const keep = [];
     const malformed = [];
@@ -206,8 +205,10 @@ export async function flushApiRetryQueue(config, logger) {
     if (sent || dropped || terminal || keep.length) {
       logger.info("Retry-очередь API", { sent, left: keep.length, dropped, terminal });
     }
+    return { sent, left: keep.length, dropped, terminal, failed: stop };
   } catch (error) {
     logger.warn("Ошибка обработки retry-очереди", { error: error.message });
+    return { sent: 0, left: null, dropped: 0, terminal: 0, failed: true };
   } finally {
     flushing = false;
     const buffered = pendingDuringFlush.splice(0, pendingDuringFlush.length);
@@ -219,16 +220,25 @@ export async function flushApiRetryQueue(config, logger) {
   }
 }
 
-// Фоновая досылка: сразу при старте (добираем хвост прошлого запуска) и далее раз в минуту.
+// Фоновая досылка: локально проверяется часто, но после недоступности API уходит
+// в длинный backoff и не удерживает serverless-базу постоянно включённой.
 export function startApiRetryLoop(config, logger, { flushImmediately = true } = {}) {
   if (!config.useApi) return null;
-  if (flushImmediately) flushApiRetryQueue(config, logger);
-  const timer = setInterval(() => {
-    flushApiRetryQueue(config, logger);
-  }, RETRY_LOOP_INTERVAL_MS);
-  timer.unref?.();
+  let stopped = false;
+  let timer = null;
+  const schedule = (delay) => {
+    if (stopped) return;
+    timer = setTimeout(run, delay);
+    timer.unref?.();
+  };
+  const run = async () => {
+    const result = await flushApiRetryQueue(config, logger);
+    schedule(result?.failed ? config.apiRetryBackoffMs : config.apiRetryIntervalMs);
+    return result;
+  };
+  schedule(flushImmediately ? 0 : config.apiRetryIntervalMs);
   return {
-    stop() { clearInterval(timer); },
+    stop() { stopped = true; clearTimeout(timer); },
     flush() { return flushApiRetryQueue(config, logger); },
   };
 }

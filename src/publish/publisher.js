@@ -28,9 +28,9 @@ import {
   publicationChannelsForUnit,
 } from "./publishConfig.js";
 
-// 30 сек: публикация состава/дел не требует секундной реактивности, а редкий
-// опрос бережёт лимит API портала (бот с одного IP не должен долбить бэкенд).
-const POLL_INTERVAL_MS = 30000;
+export function publisherPollDelay(jobCount, config) {
+  return Number(jobCount) > 0 ? config.publisherActivePollMs : config.publisherIdlePollMs;
+}
 
 export function startPublisher(client, config, logger) {
   if (!config.useApi) {
@@ -39,26 +39,40 @@ export function startPublisher(client, config, logger) {
   }
   // botUnit печатаем в лог. На бою BOT_UNIT обязателен, чтобы публиковать
   // только задания своего управления.
-  logger.info("Публикатор запущен (polling очереди)", { intervalMs: POLL_INTERVAL_MS, storage: config.storage, botUnit: config.botUnit });
+  logger.info("Публикатор запущен (адаптивный polling очереди)", {
+    activeIntervalMs: config.publisherActivePollMs,
+    idleIntervalMs: config.publisherIdlePollMs,
+    storage: config.storage,
+    botUnit: config.botUnit,
+  });
   let stopped = false;
   let activeTick = null;
+  let timer = null;
+  const schedule = (delay) => {
+    if (stopped) return;
+    timer = setTimeout(tick, delay);
+    timer.unref?.();
+  };
   const tick = () => {
     // Долгая очистка Discord не должна пересекаться со следующим interval tick:
     // иначе более старые publish/delete jobs могут завершиться в обратном порядке.
     if (stopped) return Promise.resolve();
     if (activeTick) return activeTick;
+    let jobCount = 0;
     activeTick = pollOnce(client, config, logger)
+      .then((count) => { jobCount = Number(count) || 0; })
       .catch((error) => logger.error("Ошибка опроса очереди", { error: error.message }))
-      .finally(() => { activeTick = null; });
+      .finally(() => {
+        activeTick = null;
+        schedule(publisherPollDelay(jobCount, config));
+      });
     return activeTick;
   };
-  const timer = setInterval(tick, POLL_INTERVAL_MS);
-  timer.unref?.();
   const startup = preflightPublicationChannels(client, config, logger).then(tick);
   return {
     stop() {
       stopped = true;
-      clearInterval(timer);
+      clearTimeout(timer);
     },
     async drain() {
       await startup;
@@ -70,7 +84,7 @@ export function startPublisher(client, config, logger) {
 export async function pollOnce(client, config, logger) {
   // Управление бота (env BOT_UNIT) → сервер отдаёт задания строго этого управления.
   const queue = await fetchQueue(config, logger, config.botUnit);
-  if (!queue || !Array.isArray(queue.jobs) || queue.jobs.length === 0) return;
+  if (!queue || !Array.isArray(queue.jobs) || queue.jobs.length === 0) return 0;
 
   for (const job of queue.jobs) {
     try {
@@ -109,6 +123,7 @@ export async function pollOnce(client, config, logger) {
       await postPublicationFailureToApi(job, error, config, logger);
     }
   }
+  return queue.jobs.length;
 }
 
 async function fetchQueue(config, logger, unit) {

@@ -123,6 +123,13 @@ export function loadConfig({ requireRuntime = true } = {}) {
     logRawMessages: readBoolean(process.env.LOG_RAW_MESSAGES, false),
     logLevel: process.env.LOG_LEVEL?.trim() || "info",
     httpTimeoutMs: readInteger(process.env.HTTP_TIMEOUT_MS, 7000),
+    // Neon Free даёт 100 CU-часов в месяц. Частый polling не позволяет базе
+    // уснуть, поэтому в простое опрашиваем очередь редко, а при найденной работе
+    // временно возвращаем быстрый цикл.
+    publisherActivePollMs: Math.max(30_000, readInteger(process.env.PUBLISH_ACTIVE_POLL_MS, 30_000)),
+    publisherIdlePollMs: Math.max(5 * 60_000, readInteger(process.env.PUBLISH_IDLE_POLL_MS, 15 * 60_000)),
+    apiRetryIntervalMs: Math.max(60_000, readInteger(process.env.API_RETRY_INTERVAL_MS, 90_000)),
+    apiRetryBackoffMs: Math.max(5 * 60_000, readInteger(process.env.API_RETRY_BACKOFF_MS, 15 * 60_000)),
     appRelease: appRelease || "unknown",
   };
 }
